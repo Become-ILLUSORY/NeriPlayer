@@ -1381,29 +1381,26 @@ fun SettingsScreen(
 
                         ListItem(
                             headlineContent = { Text(stringResource(R.string.settings_youtube_custom_domain)) },
-                            supportingContent = {
-                                OutlinedTextField(
-                                    value = domainInput,
-                                    onValueChange = { domainInput = it },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 8.dp),
-                                    placeholder = { Text("proxy.example.com") },
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(autoCorrect = false),
-                                    colors = OutlinedTextFieldDefaults.colors()
-                                )
-                            },
-                            trailingContent = {
-                                TextButton(
-                                    onClick = {
-                                        onYouTubeCustomDomainChange(domainInput)
-                                    }
-                                ) {
+                            supportingContent = null,
+                            trailingContent = null,
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+
+                        OutlinedTextField(
+                            value = domainInput,
+                            onValueChange = { domainInput = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            placeholder = { Text("proxy.example.com") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(autoCorrect = false),
+                            colors = OutlinedTextFieldDefaults.colors(),
+                            trailingIcon = {
+                                TextButton(onClick = { onYouTubeCustomDomainChange(domainInput) }) {
                                     Text(stringResource(R.string.action_save))
                                 }
-                            },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                            }
                         )
                     }
 
