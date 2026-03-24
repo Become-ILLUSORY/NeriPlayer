@@ -161,6 +161,9 @@
     <string name="settings_network">网络设置</string>
     <string name="settings_bypass_proxy">绕过系统代理</string>
     <string name="settings_bypass_proxy_desc">应用内网络请求不走系统代理</string>
+    <string name="settings_youtube_domain_replacement">YouTube 域名替换</string>
+    <string name="settings_youtube_domain_replacement_desc">输入自定义域名以替换所有 YouTube 相关域名（youtube.com、music.youtube.com 等），留空则使用默认域名</string>
+    <string name="settings_save">保存</string>
     <string name="settings_storage">存储与缓存</string>
     <string name="settings_cache_limit">音乐缓存上限</string>
     <string name="settings_clear_cache">清除缓存</string>

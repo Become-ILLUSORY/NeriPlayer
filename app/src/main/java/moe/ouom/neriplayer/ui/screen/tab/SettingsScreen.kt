@@ -46,6 +46,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.AltRoute
 import androidx.compose.material.icons.filled.AccountCircle
@@ -72,11 +73,13 @@ import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,6 +100,8 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.LocalTextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -247,6 +252,8 @@ fun SettingsScreen(
     onStopOnBluetoothDisconnectChange: (Boolean) -> Unit,
     allowMixedPlayback: Boolean,
     onAllowMixedPlaybackChange: (Boolean) -> Unit,
+    youtubeDomainReplacement: String,
+    onYouTubeDomainReplacementChange: (String) -> Unit,
     onNavigateToDownloadManager: () -> Unit = {},
     maxCacheSizeBytes: Long,
     onMaxCacheSizeBytesChange: (Long) -> Unit,
@@ -1325,6 +1332,40 @@ fun SettingsScreen(
                             supportingContent = { Text(stringResource(R.string.settings_bypass_proxy_desc)) },
                             trailingContent = {
                                 Switch(checked = bypassProxy, onCheckedChange = onBypassProxyChange)
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+
+                        var domainInputText by remember { mutableStateOf(youtubeDomainReplacement) }
+                        LaunchedEffect(youtubeDomainReplacement) {
+                            domainInputText = youtubeDomainReplacement
+                        }
+
+                        ListItem(
+                            headlineContent = { Text(stringResource(R.string.settings_youtube_domain_replacement)) },
+                            supportingContent = {
+                                Column {
+                                    Text(stringResource(R.string.settings_youtube_domain_replacement_desc))
+                                    OutlinedTextField(
+                                        value = domainInputText,
+                                        onValueChange = { domainInputText = it },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp),
+                                        placeholder = { Text("music.youtube.com") },
+                                        singleLine = true,
+                                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                                    )
+                                }
+                            },
+                            trailingContent = {
+                                TextButton(
+                                    onClick = {
+                                        onYouTubeDomainReplacementChange(domainInputText)
+                                    }
+                                ) {
+                                    Text(stringResource(R.string.settings_save))
+                                }
                             },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                         )

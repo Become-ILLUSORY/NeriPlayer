@@ -467,6 +467,7 @@ fun NeriApp(
     val keepPlaybackModeState by repo.keepPlaybackModeStateFlow.collectAsState(initial = true)
     val stopOnBluetoothDisconnect by repo.stopOnBluetoothDisconnectFlow.collectAsState(initial = true)
     val allowMixedPlayback by repo.allowMixedPlaybackFlow.collectAsState(initial = false)
+    val youtubeDomainReplacement by repo.youtubeDomainReplacementFlow.collectAsState(initial = "")
     val maxCacheSizeBytes by repo.maxCacheSizeBytesFlow.collectAsState(initial = 1024L * 1024 * 1024)
     val homeUsageEntries by AppContainer.playlistUsageRepo.frequentPlaylistsFlow.collectAsState(initial = emptyList())
     var pendingFollowSystemDark by remember { mutableStateOf<Boolean?>(null) }
@@ -1373,6 +1374,10 @@ fun NeriApp(
                                         allowMixedPlayback = allowMixedPlayback,
                                         onAllowMixedPlaybackChange = { enabled ->
                                             scope.launch { repo.setAllowMixedPlayback(enabled) }
+                                        },
+                                        youtubeDomainReplacement = youtubeDomainReplacement,
+                                        onYouTubeDomainReplacementChange = { domain ->
+                                            scope.launch { repo.setYouTubeDomainReplacement(domain) }
                                         },
                                         maxCacheSizeBytes = maxCacheSizeBytes,
                                         onMaxCacheSizeBytesChange = { size ->

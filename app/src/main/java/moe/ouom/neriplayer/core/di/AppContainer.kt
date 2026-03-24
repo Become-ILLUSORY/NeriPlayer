@@ -53,6 +53,7 @@ import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeInnertubeRequestHea
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubePageRequestHeaders
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeStreamRequestHeaders
 import moe.ouom.neriplayer.util.DynamicProxySelector
+import moe.ouom.neriplayer.util.YouTubeDomainReplacer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -145,8 +146,15 @@ object AppContainer {
             okHttpClient = sharedOkHttpClient,
             settings = settingsRepo,
             authProvider = youtubeAuthRepo::getAuthOnce,
-            applicationContext = application
+            applicationContext = application,
+            domainReplacer = { url -> domainReplacer(url) }
         )
+    }
+
+    private var currentDomainReplacement: String = ""
+
+    private fun domainReplacer(url: String): String {
+        return YouTubeDomainReplacer.replaceDomain(url, currentDomainReplacement)
     }
 
     val cloudMusicSearchApi by lazy { CloudMusicSearchApi(neteaseClient) }
@@ -211,6 +219,12 @@ object AppContainer {
         settingsRepo.downloadDirectoryLabelFlow
             .onEach { label ->
                 ManagedDownloadStorage.updateCustomDirectoryLabel(label)
+            }
+            .launchIn(scope)
+
+        settingsRepo.youtubeDomainReplacementFlow
+            .onEach { domain ->
+                currentDomainReplacement = domain
             }
             .launchIn(scope)
     }

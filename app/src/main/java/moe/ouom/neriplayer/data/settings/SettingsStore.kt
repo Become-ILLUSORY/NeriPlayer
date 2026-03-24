@@ -86,4 +86,5 @@ object SettingsKeys {
     val STOP_ON_BLUETOOTH_DISCONNECT = booleanPreferencesKey("stop_on_bluetooth_disconnect")
     val ALLOW_MIXED_PLAYBACK = booleanPreferencesKey("allow_mixed_playback")
     val INTERNATIONALIZATION_ENABLED = booleanPreferencesKey("internationalization_enabled")
+    val YOUTUBE_DOMAIN_REPLACEMENT = stringPreferencesKey("youtube_domain_replacement")
 }

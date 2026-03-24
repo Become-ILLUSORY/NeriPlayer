@@ -782,9 +782,10 @@ class YouTubeMusicPlaybackRepository(
     private val authProvider: () -> YouTubeAuthBundle = { YouTubeAuthBundle() },
     private val streamingCipherResolverFactory: ((String) -> YouTubeStreamingCipherResolver)? = null,
     applicationContext: Context? = null,
-    poTokenProvider: YouTubePoTokenProvider? = null
+    poTokenProvider: YouTubePoTokenProvider? = null,
+    private val domainReplacer: (String) -> String = { url -> url }
 ) {
-    private val downloader = NewPipeOkHttpDownloader(okHttpClient, authProvider)
+    private val downloader = NewPipeOkHttpDownloader(okHttpClient, authProvider, domainReplacer)
     private val playableAudioCache = linkedMapOf<String, CachedPlayableAudio>()
     private val inFlightPlayableAudio = linkedMapOf<InFlightPlayableAudioRequest, kotlinx.coroutines.Deferred<YouTubePlayableAudio?>>()
     private val inFlightPlayableAudioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

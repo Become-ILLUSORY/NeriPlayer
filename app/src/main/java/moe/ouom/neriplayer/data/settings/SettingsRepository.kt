@@ -200,6 +200,9 @@ class SettingsRepository(private val context: Context) {
     val internationalizationEnabledFlow: Flow<Boolean> =
         context.dataStore.data.map { it[SettingsKeys.INTERNATIONALIZATION_ENABLED] ?: defaultInternationalization }
 
+    val youtubeDomainReplacementFlow: Flow<String> =
+        context.dataStore.data.map { it[SettingsKeys.YOUTUBE_DOMAIN_REPLACEMENT] ?: "" }
+
     suspend fun setDynamicColor(value: Boolean) {
         context.dataStore.edit { it[SettingsKeys.DYNAMIC_COLOR] = value }
     }
@@ -456,6 +459,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setInternationalizationEnabled(enabled: Boolean) {
         context.dataStore.edit { it[SettingsKeys.INTERNATIONALIZATION_ENABLED] = enabled }
+    }
+
+    suspend fun setYouTubeDomainReplacement(domain: String) {
+        context.dataStore.edit { it[SettingsKeys.YOUTUBE_DOMAIN_REPLACEMENT] = domain }
     }
 }
 

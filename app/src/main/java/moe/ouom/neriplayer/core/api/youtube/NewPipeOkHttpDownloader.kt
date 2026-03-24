@@ -43,13 +43,15 @@ import org.schabi.newpipe.extractor.downloader.Response
 
 class NewPipeOkHttpDownloader(
     private val client: OkHttpClient,
-    private val authProvider: () -> YouTubeAuthBundle = { YouTubeAuthBundle() }
+    private val authProvider: () -> YouTubeAuthBundle = { YouTubeAuthBundle() },
+    private val domainReplacer: (String) -> String = { url -> url }
 ) : Downloader() {
 
     override fun execute(request: Request): Response {
+        val replacedUrl = domainReplacer(request.url())
         val method = request.httpMethod().uppercase(Locale.ROOT)
         val builder = okhttp3.Request.Builder()
-            .url(request.url())
+            .url(replacedUrl)
 
         request.headers().forEach { (name, values) ->
             values.forEach { value ->
