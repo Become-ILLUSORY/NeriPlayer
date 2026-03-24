@@ -162,7 +162,7 @@
     <string name="settings_bypass_proxy">Bypass Proxy</string>
     <string name="settings_bypass_proxy_desc">Ignore system proxy</string>
     <string name="settings_youtube_domain_replacement">YouTube Domain Replacement</string>
-    <string name="settings_youtube_domain_replacement_desc">Access YouTube via custom domain</string>
+    <string name="settings_youtube_domain_replacement_desc">Access YouTube via custom domain (proxy URL should end with /)</string>
     <string name="settings_youtube_custom_domain">Custom Domain</string>
     <string name="action_save">Save</string>
     <string name="settings_storage">Storage &amp; Cache</string>

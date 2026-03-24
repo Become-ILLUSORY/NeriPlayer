@@ -1397,7 +1397,7 @@ fun SettingsScreen(
                                     value = domainInput,
                                     onValueChange = { domainInput = it },
                                     modifier = Modifier.weight(1f),
-                                    placeholder = { Text("proxy.example.com") },
+                                    placeholder = { Text("https://proxy.api.030101.xyz/") },
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(autoCorrect = false),
                                     colors = OutlinedTextFieldDefaults.colors()

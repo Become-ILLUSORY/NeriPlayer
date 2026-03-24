@@ -162,7 +162,7 @@
     <string name="settings_bypass_proxy">绕过系统代理</string>
     <string name="settings_bypass_proxy_desc">应用内网络请求不走系统代理</string>
     <string name="settings_youtube_domain_replacement">YouTube 域名替换</string>
-    <string name="settings_youtube_domain_replacement_desc">通过自定义域名访问 YouTube</string>
+    <string name="settings_youtube_domain_replacement_desc">通过自定义域名访问 YouTube（代理地址请以 / 结尾）</string>
     <string name="settings_youtube_custom_domain">自定义域名</string>
     <string name="action_save">保存</string>
     <string name="settings_storage">存储与缓存</string>
