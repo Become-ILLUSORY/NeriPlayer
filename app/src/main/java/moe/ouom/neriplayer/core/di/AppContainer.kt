@@ -109,12 +109,18 @@ object AppContainer {
                 if (youtubeDomainReplacementEnabled && youtubeCustomDomain.isNotBlank() && isYouTubeHost(host)) {
                     val originalHost = request.url.host
                     val originalPath = request.url.encodedPath
+                    val originalQuery = request.url.query
+
+                    val proxyUrl = HttpUrl.parse(youtubeCustomDomain)
+                        ?: HttpUrl.Builder().scheme("https").host(youtubeCustomDomain).build()
+
                     val newUrl = HttpUrl.Builder()
-                        .scheme("https")
-                        .host(youtubeCustomDomain)
+                        .scheme(proxyUrl.scheme ?: "https")
+                        .host(proxyUrl.host)
+                        .port(proxyUrl.port)
                         .addPathSegment(originalHost)
                         .encodedPath(originalPath)
-                        .query(request.url.query)
+                        .query(originalQuery)
                         .build()
                     val newRequest = request.newBuilder()
                         .url(newUrl)
