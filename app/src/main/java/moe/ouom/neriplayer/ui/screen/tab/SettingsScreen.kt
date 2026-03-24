@@ -1368,50 +1368,46 @@ fun SettingsScreen(
                             },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                         )
-                    }
-
-                    if (youtubeDomainReplacementEnabled) {
-                        var domainInput by rememberSaveable { mutableStateOf(youtubeCustomDomain) }
-
-                        LaunchedEffect(youtubeCustomDomain) {
-                            if (domainInput != youtubeCustomDomain) {
-                                domainInput = youtubeCustomDomain
-                            }
-                        }
 
                         ListItem(
-                            headlineContent = { Text(stringResource(R.string.settings_youtube_custom_domain)) },
-                            supportingContent = null,
-                            trailingContent = null,
+                            headlineContent = { Text(stringResource(R.string.settings_youtube_domain_replacement)) },
+                            supportingContent = { Text(stringResource(R.string.settings_youtube_domain_replacement_desc)) },
+                            trailingContent = {
+                                Switch(checked = youtubeDomainReplacementEnabled, onCheckedChange = onYouTubeDomainReplacementEnabledChange)
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                         )
 
-                        OutlinedTextField(
-                            value = domainInput,
-                            onValueChange = { domainInput = it },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp),
-                            placeholder = { Text("proxy.example.com") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(autoCorrect = false),
-                            colors = OutlinedTextFieldDefaults.colors(),
-                            trailingIcon = {
+                        if (youtubeDomainReplacementEnabled) {
+                            var domainInput by rememberSaveable { mutableStateOf(youtubeCustomDomain) }
+
+                            LaunchedEffect(youtubeCustomDomain) {
+                                if (domainInput != youtubeCustomDomain) {
+                                    domainInput = youtubeCustomDomain
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = domainInput,
+                                    onValueChange = { domainInput = it },
+                                    modifier = Modifier.weight(1f),
+                                    placeholder = { Text("proxy.example.com") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(autoCorrect = false),
+                                    colors = OutlinedTextFieldDefaults.colors()
+                                )
                                 TextButton(onClick = { onYouTubeCustomDomainChange(domainInput) }) {
                                     Text(stringResource(R.string.action_save))
                                 }
                             }
-                        )
+                        }
                     }
-
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.settings_youtube_domain_replacement)) },
-                        supportingContent = { Text(stringResource(R.string.settings_youtube_domain_replacement_desc)) },
-                        trailingContent = {
-                            Switch(checked = youtubeDomainReplacementEnabled, onCheckedChange = onYouTubeDomainReplacementEnabledChange)
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                    )
                 }
             }
 
