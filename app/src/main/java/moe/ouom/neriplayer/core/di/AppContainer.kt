@@ -54,6 +54,7 @@ import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeInnertubeRequestHea
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubePageRequestHeaders
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeStreamRequestHeaders
 import moe.ouom.neriplayer.util.DynamicProxySelector
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -111,7 +112,7 @@ object AppContainer {
                     val originalPath = request.url.encodedPath
                     val originalQuery = request.url.query
 
-                    val proxyUrl = HttpUrl.parse(youtubeCustomDomain)
+                    val proxyUrl = youtubeCustomDomain.toHttpUrlOrNull()
                         ?: HttpUrl.Builder().scheme("https").host(youtubeCustomDomain).build()
 
                     val newUrl = HttpUrl.Builder()
