@@ -54,6 +54,8 @@ import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeInnertubeRequestHea
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubePageRequestHeaders
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeStreamRequestHeaders
 import moe.ouom.neriplayer.util.DynamicProxySelector
+import okhttp3.HttpUrl
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -66,6 +68,12 @@ object AppContainer {
         get() = application
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    @Volatile
+    private var youtubeDomainReplacementEnabled = false
+
+    @Volatile
+    private var youtubeCustomDomain = ""
 
     // 基础 Repo
     val settingsRepo by lazy { SettingsRepository(application) }
@@ -94,6 +102,28 @@ object AppContainer {
     val sharedOkHttpClient by lazy {
         OkHttpClient.Builder()
             .proxySelector(DynamicProxySelector)
+            .addInterceptor(Interceptor { chain ->
+                val request = chain.request()
+                val host = request.url.host.lowercase()
+
+                if (youtubeDomainReplacementEnabled && youtubeCustomDomain.isNotBlank() && isYouTubeHost(host)) {
+                    val originalHost = request.url.host
+                    val originalPath = request.url.encodedPath
+                    val newUrl = HttpUrl.Builder()
+                        .scheme("https")
+                        .host(youtubeCustomDomain)
+                        .addPathSegment(originalHost)
+                        .encodedPath(originalPath)
+                        .query(request.url.query)
+                        .build()
+                    val newRequest = request.newBuilder()
+                        .url(newUrl)
+                        .build()
+                    return@Interceptor chain.proceed(newRequest)
+                }
+
+                chain.proceed(request)
+            })
             .addInterceptor { chain ->
                 val request = chain.request()
                 val host = request.url.host.lowercase()
@@ -189,6 +219,18 @@ object AppContainer {
             }
         }.getOrDefault(DynamicProxySelector.bypassProxy)
 
+        youtubeDomainReplacementEnabled = runCatching {
+            runBlocking(Dispatchers.IO) {
+                settingsRepo.youtubeDomainReplacementEnabledFlow.first()
+            }
+        }.getOrDefault(youtubeDomainReplacementEnabled)
+
+        youtubeCustomDomain = runCatching {
+            runBlocking(Dispatchers.IO) {
+                settingsRepo.youtubeCustomDomainFlow.first()
+            }
+        }.getOrDefault(youtubeCustomDomain)
+
         ManagedDownloadStorage.primeSettings(
             directoryUri = runCatching {
                 runBlocking(Dispatchers.IO) { settingsRepo.downloadDirectoryUriFlow.first() }
@@ -219,6 +261,18 @@ object AppContainer {
             }
             .launchIn(scope)
 
+        settingsRepo.youtubeDomainReplacementEnabledFlow
+            .onEach { enabled ->
+                youtubeDomainReplacementEnabled = enabled
+            }
+            .launchIn(scope)
+
+        settingsRepo.youtubeCustomDomainFlow
+            .onEach { domain ->
+                youtubeCustomDomain = domain
+            }
+            .launchIn(scope)
+
         settingsRepo.downloadDirectoryUriFlow
             .onEach { uri ->
                 ManagedDownloadStorage.updateCustomDirectoryUri(uri)
@@ -235,7 +289,10 @@ object AppContainer {
     private fun isYouTubeHost(host: String): Boolean {
         return host.contains("youtube") ||
             host == "youtu.be" ||
-            host.contains("googlevideo.com")
+            host.contains("googlevideo.com") ||
+            host == "youtubei.googleapis.com" ||
+            host == "m.youtube.com" ||
+            host == "music.youtube.com"
     }
 
     private fun isYouTubeInnertubeRequest(request: Request): Boolean {

@@ -45,6 +45,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.AltRoute
@@ -75,6 +76,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -202,6 +205,10 @@ fun SettingsScreen(
     onUiDensityScaleChange: (Float) -> Unit,
     bypassProxy: Boolean,
     onBypassProxyChange: (Boolean) -> Unit,
+    youtubeDomainReplacementEnabled: Boolean,
+    onYouTubeDomainReplacementEnabledChange: (Boolean) -> Unit,
+    youtubeCustomDomain: String,
+    onYouTubeCustomDomainChange: (String) -> Unit,
     backgroundImageUri: String?,
     onBackgroundImageChange: (Uri?) -> Unit,
     downloadDirectoryUri: String?,
@@ -1362,6 +1369,52 @@ fun SettingsScreen(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                         )
                     }
+
+                    if (youtubeDomainReplacementEnabled) {
+                        var domainInput by rememberSaveable { mutableStateOf(youtubeCustomDomain) }
+
+                        LaunchedEffect(youtubeCustomDomain) {
+                            if (domainInput != youtubeCustomDomain) {
+                                domainInput = youtubeCustomDomain
+                            }
+                        }
+
+                        ListItem(
+                            headlineContent = { Text(stringResource(R.string.settings_youtube_custom_domain)) },
+                            supportingContent = {
+                                OutlinedTextField(
+                                    value = domainInput,
+                                    onValueChange = { domainInput = it },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 8.dp),
+                                    placeholder = { Text("proxy.example.com") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(autoCorrect = false),
+                                    colors = OutlinedTextFieldDefaults.colors()
+                                )
+                            },
+                            trailingContent = {
+                                TextButton(
+                                    onClick = {
+                                        onYouTubeCustomDomainChange(domainInput)
+                                    }
+                                ) {
+                                    Text(stringResource(R.string.action_save))
+                                }
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+                    }
+
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.settings_youtube_domain_replacement)) },
+                        supportingContent = { Text(stringResource(R.string.settings_youtube_domain_replacement_desc)) },
+                        trailingContent = {
+                            Switch(checked = youtubeDomainReplacementEnabled, onCheckedChange = onYouTubeDomainReplacementEnabledChange)
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
                 }
             }
 

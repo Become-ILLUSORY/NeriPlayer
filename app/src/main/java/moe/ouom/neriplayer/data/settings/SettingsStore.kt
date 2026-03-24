@@ -58,6 +58,8 @@ object SettingsKeys {
     val LYRIC_FONT_SCALE = floatPreferencesKey("lyric_font_scale")
     val UI_DENSITY_SCALE = floatPreferencesKey("ui_density_scale")
     val BYPASS_PROXY = booleanPreferencesKey("bypass_proxy")
+    val YOUTUBE_DOMAIN_REPLACEMENT_ENABLED = booleanPreferencesKey("youtube_domain_replacement_enabled")
+    val YOUTUBE_CUSTOM_DOMAIN = stringPreferencesKey("youtube_custom_domain")
     val BACKGROUND_IMAGE_URI = stringPreferencesKey("background_image_uri")
     val DOWNLOAD_DIRECTORY_URI = stringPreferencesKey("download_directory_uri")
     val DOWNLOAD_DIRECTORY_LABEL = stringPreferencesKey("download_directory_label")

@@ -103,6 +103,12 @@ class SettingsRepository(private val context: Context) {
     val bypassProxyFlow: Flow<Boolean> =
         context.dataStore.data.map { it[SettingsKeys.BYPASS_PROXY] ?: true }
 
+    val youtubeDomainReplacementEnabledFlow: Flow<Boolean> =
+        context.dataStore.data.map { it[SettingsKeys.YOUTUBE_DOMAIN_REPLACEMENT_ENABLED] ?: false }
+
+    val youtubeCustomDomainFlow: Flow<String> =
+        context.dataStore.data.map { it[SettingsKeys.YOUTUBE_CUSTOM_DOMAIN] ?: "" }
+
     val backgroundImageUriFlow: Flow<String?> =
         context.dataStore.data.map { it[SettingsKeys.BACKGROUND_IMAGE_URI] }
 
@@ -334,6 +340,14 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setBypassProxy(enabled: Boolean) {
         context.dataStore.edit { it[SettingsKeys.BYPASS_PROXY] = enabled }
+    }
+
+    suspend fun setYouTubeDomainReplacementEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[SettingsKeys.YOUTUBE_DOMAIN_REPLACEMENT_ENABLED] = enabled }
+    }
+
+    suspend fun setYouTubeCustomDomain(domain: String) {
+        context.dataStore.edit { it[SettingsKeys.YOUTUBE_CUSTOM_DOMAIN] = domain }
     }
 
     suspend fun setHapticFeedbackEnabled(enabled: Boolean) {

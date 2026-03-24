@@ -444,6 +444,8 @@ fun NeriApp(
     val lyricFontScale by repo.lyricFontScaleFlow.collectAsState(initial = 1.0f)
     val uiDensityScale by repo.uiDensityScaleFlow.collectAsState(initial = 1.0f)
     val bypassProxy by repo.bypassProxyFlow.collectAsState(initial = true)
+    val youtubeDomainReplacementEnabled by repo.youtubeDomainReplacementEnabledFlow.collectAsState(initial = false)
+    val youtubeCustomDomain by repo.youtubeCustomDomainFlow.collectAsState(initial = "")
     val backgroundImageUri by repo.backgroundImageUriFlow.collectAsState(initial = null)
     val downloadDirectoryUri by repo.downloadDirectoryUriFlow.collectAsState(initial = null)
     val backgroundImageBlur by repo.backgroundImageBlurFlow.collectAsState(initial = 0f)
@@ -1276,6 +1278,14 @@ fun NeriApp(
                                         bypassProxy = bypassProxy,
                                         onBypassProxyChange = { enabled ->
                                             scope.launch { repo.setBypassProxy(enabled) }
+                                        },
+                                        youtubeDomainReplacementEnabled = youtubeDomainReplacementEnabled,
+                                        onYouTubeDomainReplacementEnabledChange = { enabled ->
+                                            scope.launch { repo.setYouTubeDomainReplacementEnabled(enabled) }
+                                        },
+                                        youtubeCustomDomain = youtubeCustomDomain,
+                                        onYouTubeCustomDomainChange = { domain ->
+                                            scope.launch { repo.setYouTubeCustomDomain(domain) }
                                         },
                                         backgroundImageUri = backgroundImageUri,
                                         onBackgroundImageChange = { uri ->
