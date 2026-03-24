@@ -115,7 +115,8 @@ object AppContainer {
                     val proxyUrl = youtubeCustomDomain.toHttpUrlOrNull()
                         ?: HttpUrl.Builder().scheme("https").host(youtubeCustomDomain).build()
 
-                    val newPath = "/$originalHost$originalPath"
+                    val proxyPath = proxyUrl.encodedPath.ifEmpty { "/" }
+                    val newPath = "$proxyPath$originalHost$originalPath"
                     val newUrl = proxyUrl.newBuilder()
                         .encodedPath(newPath)
                         .query(originalQuery)
