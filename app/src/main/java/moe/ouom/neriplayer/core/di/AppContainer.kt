@@ -291,7 +291,8 @@ object AppContainer {
     }
 
     private fun isYouTubeHost(host: String): Boolean {
-        return host.contains("youtube") ||
+        return host == "youtube.com" ||
+            host.endsWith(".youtube.com") ||
             host == "youtu.be" ||
             host.contains("googlevideo.com") ||
             host == "youtubei.googleapis.com" ||
