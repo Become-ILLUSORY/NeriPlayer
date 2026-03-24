@@ -1354,7 +1354,7 @@ fun SettingsScreen(
                                             .padding(top = 8.dp),
                                         placeholder = { Text("music.youtube.com") },
                                         singleLine = true,
-                                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp)
                                     )
                                 }
                             },

@@ -38,11 +38,19 @@ object YouTubeDomainReplacer {
 
         val normalizedReplacement = normalizeDomain(replacementDomain)
 
-        var result = url
+        var hasYouTubeDomain = false
         for (domain in YOUTUBE_DOMAINS) {
-            result = result.replace(domain, normalizedReplacement)
+            if (url.contains(domain)) {
+                hasYouTubeDomain = true
+                break
+            }
         }
-        return result
+
+        if (!hasYouTubeDomain) {
+            return url
+        }
+
+        return "$normalizedReplacement/$url"
     }
 
     fun replaceOrigin(origin: String, replacementDomain: String): String {
