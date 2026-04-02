@@ -118,6 +118,7 @@ import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthState
 import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
+import moe.ouom.neriplayer.data.platform.youtube.normalizeYouTubeReverseProxyBaseUrl
 import moe.ouom.neriplayer.data.settings.MAX_LYRIC_FONT_SCALE
 import moe.ouom.neriplayer.data.settings.MIN_LYRIC_FONT_SCALE
 import moe.ouom.neriplayer.data.settings.background.BackgroundImageStorage
@@ -282,11 +283,14 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val settingsRepo = remember { AppContainer.settingsRepo }
     val listenTogetherPreferences = remember { AppContainer.listenTogetherPreferences }
     val listenTogetherApi = remember { AppContainer.listenTogetherApi }
     val listenTogetherSessionManager = remember { AppContainer.listenTogetherSessionManager }
     val listenTogetherSessionState by listenTogetherSessionManager.sessionState.collectAsState()
     val listenTogetherWorkerBaseUrl by listenTogetherPreferences.workerBaseUrlFlow.collectAsState(initial = "")
+    val youtubeReverseProxyEnabled by settingsRepo.youtubeReverseProxyEnabledFlow.collectAsState(initial = false)
+    val youtubeReverseProxyBaseUrl by settingsRepo.youtubeReverseProxyBaseUrlFlow.collectAsState(initial = "")
     var pendingBackgroundImageBlur by rememberSaveable(backgroundImageUri) {
         mutableFloatStateOf(backgroundImageBlur)
     }
@@ -305,8 +309,15 @@ fun SettingsScreen(
         }
     }
 
-    val internationalEnabled by AppContainer.settingsRepo.internationalizationEnabledFlow
+    val internationalEnabled by settingsRepo.internationalizationEnabledFlow
         .collectAsState(initial = false)
+    var youtubeReverseProxyInput by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(youtubeReverseProxyBaseUrl) {
+        if (youtubeReverseProxyInput != youtubeReverseProxyBaseUrl) {
+            youtubeReverseProxyInput = youtubeReverseProxyBaseUrl
+        }
+    }
 
     // 登录菜单的状态
     var loginExpanded by rememberSaveable { mutableStateOf(false) }
@@ -937,7 +948,7 @@ fun SettingsScreen(
                         },
                         onOpenYouTubeSheet = {
                             inlineMsg = null
-                            youtubeSheetInitialTab = 0
+                            youtubeSheetInitialTab = if (youtubeReverseProxyEnabled) 1 else 0
                             showYouTubeSheet = true
                         },
                         onOpenNeteaseSheet = {
@@ -1494,6 +1505,100 @@ fun SettingsScreen(
                             },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                         )
+                        ListItem(
+                            leadingContent = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Link,
+                                    contentDescription = stringResource(R.string.settings_youtube_reverse_proxy),
+                                    modifier = Modifier.size(24.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            headlineContent = {
+                                Text(stringResource(R.string.settings_youtube_reverse_proxy))
+                            },
+                            supportingContent = {
+                                val description = when {
+                                    youtubeReverseProxyEnabled && youtubeReverseProxyBaseUrl.isNotBlank() ->
+                                        stringResource(
+                                            R.string.settings_youtube_reverse_proxy_saved_desc,
+                                            youtubeReverseProxyBaseUrl
+                                        )
+                                    youtubeReverseProxyEnabled ->
+                                        stringResource(R.string.settings_youtube_reverse_proxy_unsaved_desc)
+                                    else -> stringResource(R.string.settings_youtube_reverse_proxy_desc)
+                                }
+                                Text(description)
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = youtubeReverseProxyEnabled,
+                                    onCheckedChange = { enabled ->
+                                        scope.launch {
+                                            settingsRepo.setYouTubeReverseProxyEnabled(enabled)
+                                        }
+                                    }
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+                        AnimatedVisibility(visible = youtubeReverseProxyEnabled) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 56.dp, end = 8.dp, bottom = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.settings_youtube_reverse_proxy_input_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedTextField(
+                                    value = youtubeReverseProxyInput,
+                                    onValueChange = { youtubeReverseProxyInput = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = {
+                                        Text(stringResource(R.string.settings_youtube_reverse_proxy_input_label))
+                                    },
+                                    placeholder = {
+                                        Text(stringResource(R.string.settings_youtube_reverse_proxy_input_placeholder))
+                                    }
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val normalizedBaseUrl = normalizeYouTubeReverseProxyBaseUrl(
+                                                youtubeReverseProxyInput
+                                            )
+                                            if (normalizedBaseUrl == null) {
+                                                Toast.makeText(
+                                                    context,
+                                                    context.getString(R.string.settings_youtube_reverse_proxy_invalid),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                                return@OutlinedButton
+                                            }
+                                            scope.launch {
+                                                settingsRepo.setYouTubeReverseProxyBaseUrl(normalizedBaseUrl)
+                                                youtubeReverseProxyInput = normalizedBaseUrl
+                                                Toast.makeText(
+                                                    context,
+                                                    context.getString(R.string.settings_youtube_reverse_proxy_saved),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    ) {
+                                        Text(stringResource(R.string.music_save_changes))
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1730,6 +1835,7 @@ fun SettingsScreen(
     SettingsYouTubeAuthDialogs(
         showSheet = showYouTubeSheet,
         initialTab = youtubeSheetInitialTab,
+        browserLoginEnabled = !youtubeReverseProxyEnabled,
         onDismissSheet = { showYouTubeSheet = false },
         inlineMsg = inlineMsg,
         onInlineMsgChange = { inlineMsg = it },

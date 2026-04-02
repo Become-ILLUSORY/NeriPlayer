@@ -84,6 +84,30 @@ class AppContainerBootstrapTest {
     }
 
     @Test
+    fun `resolveInitialYouTubeReverseProxySettings prefers persisted values`() {
+        val resolved = resolveInitialYouTubeReverseProxySettings(
+            loadEnabled = { true },
+            loadBaseUrl = { "https://proxy.api.030101.xyz/" }
+        )
+
+        assertTrue(resolved.enabled)
+        assertEquals("https://proxy.api.030101.xyz", resolved.baseUrl)
+    }
+
+    @Test
+    fun `resolveInitialYouTubeReverseProxySettings falls back to current values when loading fails`() {
+        val resolved = resolveInitialYouTubeReverseProxySettings(
+            currentEnabled = true,
+            currentBaseUrl = "https://proxy.example.com/base",
+            loadEnabled = { error("boom-enabled") },
+            loadBaseUrl = { error("boom-base") }
+        )
+
+        assertTrue(resolved.enabled)
+        assertEquals("https://proxy.example.com/base", resolved.baseUrl)
+    }
+
+    @Test
     fun `handleYouTubeAuthStateChanged clears caches without canceling in-flight playback`() {
         val steps = mutableListOf<String>()
         var cancelInFlightPlayableAudio: Boolean? = null

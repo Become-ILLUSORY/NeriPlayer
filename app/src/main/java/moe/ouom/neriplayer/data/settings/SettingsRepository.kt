@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import moe.ouom.neriplayer.core.download.normalizeDownloadFileNameTemplate
+import moe.ouom.neriplayer.data.platform.youtube.normalizeYouTubeReverseProxyBaseUrl
 import moe.ouom.neriplayer.core.player.model.DEFAULT_PLAYBACK_PITCH
 import moe.ouom.neriplayer.core.player.model.DEFAULT_PLAYBACK_LOUDNESS_GAIN_MB
 import moe.ouom.neriplayer.core.player.model.DEFAULT_PLAYBACK_SPEED
@@ -130,6 +131,15 @@ class SettingsRepository(private val context: Context) {
 
     val bypassProxyFlow: Flow<Boolean> =
         context.dataStore.data.map { it[SettingsKeys.BYPASS_PROXY] ?: true }
+
+    val youtubeReverseProxyEnabledFlow: Flow<Boolean> =
+        context.dataStore.data.map { it[SettingsKeys.YOUTUBE_REVERSE_PROXY_ENABLED] ?: false }
+
+    val youtubeReverseProxyBaseUrlFlow: Flow<String> =
+        context.dataStore.data.map {
+            normalizeYouTubeReverseProxyBaseUrl(it[SettingsKeys.YOUTUBE_REVERSE_PROXY_BASE_URL])
+                .orEmpty()
+        }
 
     val backgroundImageUriFlow: Flow<String?> =
         context.dataStore.data.map { it[SettingsKeys.BACKGROUND_IMAGE_URI] }
@@ -416,6 +426,21 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setBypassProxy(enabled: Boolean) {
         context.dataStore.edit { it[SettingsKeys.BYPASS_PROXY] = enabled }
+    }
+
+    suspend fun setYouTubeReverseProxyEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[SettingsKeys.YOUTUBE_REVERSE_PROXY_ENABLED] = enabled }
+    }
+
+    suspend fun setYouTubeReverseProxyBaseUrl(baseUrl: String?) {
+        context.dataStore.edit {
+            val normalized = normalizeYouTubeReverseProxyBaseUrl(baseUrl)
+            if (normalized == null) {
+                it.remove(SettingsKeys.YOUTUBE_REVERSE_PROXY_BASE_URL)
+            } else {
+                it[SettingsKeys.YOUTUBE_REVERSE_PROXY_BASE_URL] = normalized
+            }
+        }
     }
 
     suspend fun setHapticFeedbackEnabled(enabled: Boolean) {

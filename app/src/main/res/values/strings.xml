@@ -169,6 +169,15 @@
     <string name="settings_network">网络设置</string>
     <string name="settings_bypass_proxy">绕过系统代理</string>
     <string name="settings_bypass_proxy_desc">应用内网络请求不走系统代理</string>
+    <string name="settings_youtube_reverse_proxy">反代Youtube</string>
+    <string name="settings_youtube_reverse_proxy_desc">在保存有效地址后，通过你的反代转发 YouTube 和 Googlevideo 请求</string>
+    <string name="settings_youtube_reverse_proxy_unsaved_desc">已启用，保存有效地址后才会生效</string>
+    <string name="settings_youtube_reverse_proxy_saved_desc">当前保存：%1$s</string>
+    <string name="settings_youtube_reverse_proxy_input_label">YouTube 反代地址</string>
+    <string name="settings_youtube_reverse_proxy_input_placeholder">https://proxy.api.030101.xyz</string>
+    <string name="settings_youtube_reverse_proxy_input_hint">保存后会将 https://music.youtube.com/... 改写为 https://你的反代/https://music.youtube.com/...</string>
+    <string name="settings_youtube_reverse_proxy_saved">YouTube 反代地址已保存</string>
+    <string name="settings_youtube_reverse_proxy_invalid">请输入有效的反代地址，例如：https://proxy.api.030101.xyz</string>
     <string name="settings_storage">存储与缓存</string>
     <string name="settings_cache_limit">音乐缓存上限</string>
     <string name="settings_clear_cache">清除缓存</string>
@@ -1247,6 +1256,8 @@
     <string name="settings_bili_login_browser_hint">将打开内置网页访问 passport.bilibili.com，登录成功后自动读取 Cookie。</string>
     <string name="settings_youtube_login_browser_hint">将尝试通过内置网页打开 music.youtube.com，并在登录后自动读取 Cookie。</string>
     <string name="settings_youtube_login_browser_warning">Google 可能提示“此浏览器可能不安全”或直接拦截登录；若失败，请切换到上方的“Cookie 导入”标签。</string>
+    <string name="settings_youtube_reverse_proxy_login_disabled">已启用反代Youtube，内置 WebView 登录不可用。请先在外部完成登录，再手动导入 Cookie。</string>
+    <string name="settings_youtube_reverse_proxy_web_login_blocked">已启用反代Youtube，请使用 Cookie 导入登录</string>
     <string name="login_paste_bili_cookie_hint">粘贴 Cookie（例如：SESSDATA=…; bili_jct=…）</string>
     <string name="login_paste_youtube_cookie_hint">粘贴 Cookie（例如：SAPISID=…; __Secure-1PSID=…）</string>
     <string name="settings_cookie_input_hint">请输入 Cookie</string>

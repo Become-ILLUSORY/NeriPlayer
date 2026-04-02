@@ -169,6 +169,15 @@
     <string name="settings_network">Network</string>
     <string name="settings_bypass_proxy">Bypass Proxy</string>
     <string name="settings_bypass_proxy_desc">Ignore system proxy</string>
+    <string name="settings_youtube_reverse_proxy">Reverse Proxy YouTube</string>
+    <string name="settings_youtube_reverse_proxy_desc">Rewrite YouTube and Googlevideo requests through your reverse proxy after a valid base URL is saved</string>
+    <string name="settings_youtube_reverse_proxy_unsaved_desc">Enabled. Save a valid base URL before it takes effect.</string>
+    <string name="settings_youtube_reverse_proxy_saved_desc">Saved base URL: %1$s</string>
+    <string name="settings_youtube_reverse_proxy_input_label">YouTube Reverse Proxy Base URL</string>
+    <string name="settings_youtube_reverse_proxy_input_placeholder">https://proxy.api.030101.xyz</string>
+    <string name="settings_youtube_reverse_proxy_input_hint">Saved requests are rewritten from https://music.youtube.com/... to https://your-proxy/https://music.youtube.com/...</string>
+    <string name="settings_youtube_reverse_proxy_saved">YouTube reverse proxy saved</string>
+    <string name="settings_youtube_reverse_proxy_invalid">Enter a valid reverse proxy base URL, for example: https://proxy.api.030101.xyz</string>
     <string name="settings_storage">Storage &amp; Cache</string>
     <string name="settings_cache_limit">Cache Limit</string>
     <string name="settings_clear_cache">Clear</string>
@@ -1230,6 +1239,8 @@
     <string name="settings_bili_login_browser_hint">Opens the built-in web view for passport.bilibili.com and automatically reads cookies after sign-in.</string>
     <string name="settings_youtube_login_browser_hint">Tries to open music.youtube.com in the built-in web view and automatically reads cookies after sign-in.</string>
     <string name="settings_youtube_login_browser_warning">Google may show \"This browser may not be secure\" or block sign-in entirely. If that happens, switch to the \"Cookie Import\" tab above.</string>
+    <string name="settings_youtube_reverse_proxy_login_disabled">Reverse proxy mode is enabled. Built-in WebView sign-in is unavailable. Sign in externally, then import cookies manually.</string>
+    <string name="settings_youtube_reverse_proxy_web_login_blocked">Reverse proxy mode is enabled. Use Cookie Import instead of built-in sign-in.</string>
     <string name="login_paste_bili_cookie_hint">Paste Cookie (e.g.: SESSDATA=…; bili_jct=…)</string>
     <string name="login_paste_youtube_cookie_hint">Paste Cookie (e.g.: SAPISID=…; __Secure-1PSID=…)</string>
     <string name="settings_cookie_input_hint">Please enter Cookie</string>

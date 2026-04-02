@@ -34,6 +34,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -56,6 +57,7 @@ import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthRepository
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeCookieSupport
 import moe.ouom.neriplayer.data.auth.youtube.YOUTUBE_MUSIC_ORIGIN
 import moe.ouom.neriplayer.data.platform.youtube.isTrustedYouTubeLoginHost
+import moe.ouom.neriplayer.data.platform.youtube.YouTubeReverseProxyRuntime
 import moe.ouom.neriplayer.util.NPLogger
 import moe.ouom.neriplayer.util.isAllowedMainFrameRequest
 import moe.ouom.neriplayer.util.lockPortraitIfPhone
@@ -92,6 +94,15 @@ class YouTubeWebLoginActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (YouTubeReverseProxyRuntime.isEnabled()) {
+            Toast.makeText(
+                this,
+                getString(R.string.settings_youtube_reverse_proxy_web_login_blocked),
+                Toast.LENGTH_SHORT
+            ).show()
+            finish()
+            return
+        }
         lockPortraitIfPhone()
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)

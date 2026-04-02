@@ -114,7 +114,8 @@ class YouTubeAuthAutoRefreshManager(
     context: Context,
     private val authProvider: () -> YouTubeAuthBundle = { YouTubeAuthBundle() },
     private val authHealthProvider: () -> YouTubeAuthHealth = { YouTubeAuthHealth() },
-    private val authUpdater: (YouTubeAuthBundle) -> Unit = {}
+    private val authUpdater: (YouTubeAuthBundle) -> Unit = {},
+    private val reverseProxyEnabledProvider: () -> Boolean = { false }
 ) {
     companion object {
         private const val TAG = "YouTubeAuthRefresh"
@@ -185,6 +186,9 @@ class YouTubeAuthAutoRefreshManager(
         reason: String,
         force: Boolean = false
     ): YouTubeAuthAutoRefreshResult {
+        if (reverseProxyEnabledProvider()) {
+            return YouTubeAuthAutoRefreshResult(reason = "reverse_proxy_enabled")
+        }
         val auth = authProvider().normalized()
         val health = authHealthProvider()
         if (!auth.hasLoginCookies()) {

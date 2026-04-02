@@ -204,6 +204,7 @@ internal fun SettingsBiliAuthDialogs(
 internal fun SettingsYouTubeAuthDialogs(
     showSheet: Boolean,
     initialTab: Int,
+    browserLoginEnabled: Boolean,
     onDismissSheet: () -> Unit,
     inlineMsg: String?,
     onInlineMsgChange: (String?) -> Unit,
@@ -229,6 +230,8 @@ internal fun SettingsYouTubeAuthDialogs(
         TwoTabCookieLoginSheet(
             title = stringResource(R.string.common_youtube),
             initialTab = initialTab,
+            browserLoginEnabled = browserLoginEnabled,
+            browserDisabledMessage = stringResource(R.string.settings_youtube_reverse_proxy_login_disabled),
             inlineMsg = inlineMsg,
             onInlineMsgChange = onInlineMsgChange,
             onDismiss = onDismissSheet,
@@ -274,6 +277,8 @@ internal fun SettingsYouTubeAuthDialogs(
 private fun TwoTabCookieLoginSheet(
     title: String,
     initialTab: Int,
+    browserLoginEnabled: Boolean = true,
+    browserDisabledMessage: String? = null,
     inlineMsg: String?,
     onInlineMsgChange: (String?) -> Unit,
     onDismiss: () -> Unit,
@@ -283,7 +288,9 @@ private fun TwoTabCookieLoginSheet(
     onSaveCookie: (String) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
+    var selectedTab by remember(initialTab, browserLoginEnabled) {
+        mutableIntStateOf(if (browserLoginEnabled) initialTab.coerceIn(0, 1) else 1)
+    }
     var rawCookie by remember { mutableStateOf("") }
 
     ModalBottomSheet(
@@ -308,23 +315,25 @@ private fun TwoTabCookieLoginSheet(
                     )
                 }
 
-                PrimaryTabRow(selectedTabIndex = selectedTab) {
-                    Tab(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        text = { Text(stringResource(R.string.login_browser)) }
-                    )
-                    Tab(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        text = { Text(stringResource(R.string.login_paste_cookie)) }
-                    )
+                if (browserLoginEnabled) {
+                    PrimaryTabRow(selectedTabIndex = selectedTab) {
+                        Tab(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0 },
+                            text = { Text(stringResource(R.string.login_browser)) }
+                        )
+                        Tab(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1 },
+                            text = { Text(stringResource(R.string.login_paste_cookie)) }
+                        )
+                    }
+
+                    Spacer(Modifier.height(12.dp))
                 }
 
-                Spacer(Modifier.height(12.dp))
-
-                when (selectedTab) {
-                    0 -> {
+                when {
+                    browserLoginEnabled && selectedTab == 0 -> {
                         browserHintContent()
                         HapticButton(onClick = onBrowserLogin) {
                             Text(stringResource(R.string.login_start_browser))
@@ -332,6 +341,14 @@ private fun TwoTabCookieLoginSheet(
                     }
 
                     else -> {
+                        if (!browserLoginEnabled && !browserDisabledMessage.isNullOrBlank()) {
+                            Text(
+                                text = browserDisabledMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
                         androidx.compose.material3.OutlinedTextField(
                             value = rawCookie,
                             onValueChange = { rawCookie = it },

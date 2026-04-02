@@ -87,7 +87,8 @@ private data class WebPoMintResult(
 
 internal class YouTubeWebPoTokenProvider(
     context: Context,
-    private val authProvider: () -> YouTubeAuthBundle = { YouTubeAuthBundle() }
+    private val authProvider: () -> YouTubeAuthBundle = { YouTubeAuthBundle() },
+    private val reverseProxyEnabledProvider: () -> Boolean = { false }
 ) : YouTubePoTokenProvider {
     companion object {
         private const val TAG = "YouTubeWebPoToken"
@@ -129,6 +130,9 @@ internal class YouTubeWebPoTokenProvider(
     private var lastUnavailableLogAtMs: Long = 0L
 
     override suspend fun warmSession() {
+        if (reverseProxyEnabledProvider()) {
+            return
+        }
         val auth = authProvider().normalized()
         if (!auth.hasLoginCookies()) {
             return
@@ -157,6 +161,9 @@ internal class YouTubeWebPoTokenProvider(
         remoteHost: String,
         forceRefresh: Boolean
     ): String? {
+        if (reverseProxyEnabledProvider()) {
+            return null
+        }
         val auth = authProvider().normalized()
         return accessMutex.withLock {
         val now = System.currentTimeMillis()

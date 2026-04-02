@@ -186,6 +186,7 @@ fun StartupOnboardingScreen() {
     val backgroundImageAlpha by repo.backgroundImageAlphaFlow.collectAsState(initial = 0.3f)
     val followSystemDark by repo.followSystemDarkFlow.collectAsState(initial = true)
     val forceDark by repo.forceDarkFlow.collectAsState(initial = false)
+    val youtubeReverseProxyEnabled by repo.youtubeReverseProxyEnabledFlow.collectAsState(initial = false)
     val systemDark = isSystemInDarkTheme()
     val isDarkTheme = when {
         forceDark -> true
@@ -685,6 +686,7 @@ fun StartupOnboardingScreen() {
             SettingsYouTubeAuthDialogs(
                 showSheet = showYouTubeSheet,
                 initialTab = youTubeSheetTab,
+                browserLoginEnabled = !youtubeReverseProxyEnabled,
                 onDismissSheet = { showYouTubeSheet = false },
                 inlineMsg = inlineMessage,
                 onInlineMsgChange = { inlineMessage = it },

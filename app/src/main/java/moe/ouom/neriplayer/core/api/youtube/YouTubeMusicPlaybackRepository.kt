@@ -740,7 +740,8 @@ class YouTubeMusicPlaybackRepository(
     private val authAutoRefreshManager: YouTubeAuthAutoRefreshManager? = null,
     private val streamingCipherResolverFactory: ((String) -> YouTubeStreamingCipherResolver)? = null,
     applicationContext: Context? = null,
-    poTokenProvider: YouTubePoTokenProvider? = null
+    poTokenProvider: YouTubePoTokenProvider? = null,
+    private val youtubeReverseProxyEnabledProvider: () -> Boolean = { false }
 ) {
     private val downloader = NewPipeOkHttpDownloader(okHttpClient, authProvider)
     private val playableAudioCache = linkedMapOf<String, CachedPlayableAudio>()
@@ -750,7 +751,11 @@ class YouTubeMusicPlaybackRepository(
         YouTubeEjsChallengeSolver(it, okHttpClient)
     }
     private val poTokenProvider = poTokenProvider ?: applicationContext?.let {
-        YouTubeWebPoTokenProvider(it, authProvider)
+        YouTubeWebPoTokenProvider(
+            context = it,
+            authProvider = authProvider,
+            reverseProxyEnabledProvider = youtubeReverseProxyEnabledProvider
+        )
     }
 
     @Volatile
@@ -2092,46 +2097,56 @@ class YouTubeMusicPlaybackRepository(
     }
 
     private fun playerClientProfiles(): List<YouTubePlayerClientProfile> {
-        return listOf(
-            YouTubePlayerClientProfile(
-                clientId = YOUTUBE_PLAYER_WEB_REMIX_CLIENT_ID,
-                clientName = YOUTUBE_PLAYER_WEB_REMIX_CLIENT_NAME,
-                clientVersion = "1.20250101.01.00",
-                userAgent = YOUTUBE_PLAYER_WEB_REMIX_USER_AGENT,
-                endpointPath = "player",
-                platform = "DESKTOP",
-                clientScreen = YOUTUBE_PLAYER_WEB_REMIX_CLIENT_SCREEN,
-                osName = "Windows",
-                osVersion = "10.0"
-            ),
-            YouTubePlayerClientProfile(
-                clientId = YOUTUBE_PLAYER_TV_CLIENT_ID,
-                clientName = YOUTUBE_PLAYER_TV_CLIENT_NAME,
-                clientVersion = YOUTUBE_PLAYER_TV_CLIENT_VERSION,
-                userAgent = YOUTUBE_PLAYER_TV_USER_AGENT,
-                endpointPath = "player",
-                platform = "TV"
-            ),
-            YouTubePlayerClientProfile(
-                clientId = YOUTUBE_PLAYER_TV_CLIENT_ID,
-                clientName = YOUTUBE_PLAYER_TV_CLIENT_NAME,
-                clientVersion = YOUTUBE_PLAYER_TV_DOWNGRADED_CLIENT_VERSION,
-                userAgent = YOUTUBE_PLAYER_TV_DOWNGRADED_USER_AGENT,
-                endpointPath = "player",
-                platform = "TV"
-            ),
-            YouTubePlayerClientProfile(
-                clientId = YOUTUBE_PLAYER_IOS_CLIENT_ID,
-                clientName = YOUTUBE_PLAYER_IOS_CLIENT_NAME,
-                clientVersion = YOUTUBE_PLAYER_IOS_CLIENT_VERSION,
-                userAgent = YOUTUBE_PLAYER_IOS_USER_AGENT,
-                endpointPath = "player",
-                deviceMake = "Apple",
-                deviceModel = YOUTUBE_PLAYER_IOS_DEVICE_MODEL,
-                osName = "iOS",
-                osVersion = YOUTUBE_PLAYER_IOS_OS_VERSION
+        return buildList {
+            if (!youtubeReverseProxyEnabledProvider()) {
+                add(
+                    YouTubePlayerClientProfile(
+                        clientId = YOUTUBE_PLAYER_WEB_REMIX_CLIENT_ID,
+                        clientName = YOUTUBE_PLAYER_WEB_REMIX_CLIENT_NAME,
+                        clientVersion = "1.20250101.01.00",
+                        userAgent = YOUTUBE_PLAYER_WEB_REMIX_USER_AGENT,
+                        endpointPath = "player",
+                        platform = "DESKTOP",
+                        clientScreen = YOUTUBE_PLAYER_WEB_REMIX_CLIENT_SCREEN,
+                        osName = "Windows",
+                        osVersion = "10.0"
+                    )
+                )
+            }
+            add(
+                YouTubePlayerClientProfile(
+                    clientId = YOUTUBE_PLAYER_TV_CLIENT_ID,
+                    clientName = YOUTUBE_PLAYER_TV_CLIENT_NAME,
+                    clientVersion = YOUTUBE_PLAYER_TV_CLIENT_VERSION,
+                    userAgent = YOUTUBE_PLAYER_TV_USER_AGENT,
+                    endpointPath = "player",
+                    platform = "TV"
+                )
             )
-        )
+            add(
+                YouTubePlayerClientProfile(
+                    clientId = YOUTUBE_PLAYER_TV_CLIENT_ID,
+                    clientName = YOUTUBE_PLAYER_TV_CLIENT_NAME,
+                    clientVersion = YOUTUBE_PLAYER_TV_DOWNGRADED_CLIENT_VERSION,
+                    userAgent = YOUTUBE_PLAYER_TV_DOWNGRADED_USER_AGENT,
+                    endpointPath = "player",
+                    platform = "TV"
+                )
+            )
+            add(
+                YouTubePlayerClientProfile(
+                    clientId = YOUTUBE_PLAYER_IOS_CLIENT_ID,
+                    clientName = YOUTUBE_PLAYER_IOS_CLIENT_NAME,
+                    clientVersion = YOUTUBE_PLAYER_IOS_CLIENT_VERSION,
+                    userAgent = YOUTUBE_PLAYER_IOS_USER_AGENT,
+                    endpointPath = "player",
+                    deviceMake = "Apple",
+                    deviceModel = YOUTUBE_PLAYER_IOS_DEVICE_MODEL,
+                    osName = "iOS",
+                    osVersion = YOUTUBE_PLAYER_IOS_OS_VERSION
+                )
+            )
+        }
     }
 
     private suspend fun resolvePreferredQualityKey(preferredQualityOverride: String?): String {

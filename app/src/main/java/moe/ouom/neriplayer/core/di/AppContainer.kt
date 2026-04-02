@@ -28,6 +28,7 @@ import android.app.Application
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
@@ -61,6 +62,8 @@ import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeStreamRequestHeader
 import moe.ouom.neriplayer.data.platform.youtube.isTrustedYouTubeHost
 import moe.ouom.neriplayer.data.platform.youtube.isYouTubeGoogleVideoHost
 import moe.ouom.neriplayer.data.platform.youtube.isYouTubeInnertubeHost
+import moe.ouom.neriplayer.data.platform.youtube.normalizeYouTubeReverseProxyBaseUrl
+import moe.ouom.neriplayer.data.platform.youtube.YouTubeReverseProxyRuntime
 import moe.ouom.neriplayer.util.DynamicProxySelector
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -74,6 +77,11 @@ internal data class InitialManagedDownloadSettings(
     val directoryUri: String? = null,
     val directoryLabel: String? = null,
     val fileNameTemplate: String? = null
+)
+
+internal data class InitialYouTubeReverseProxySettings(
+    val enabled: Boolean = false,
+    val baseUrl: String = ""
 )
 
 internal fun resolveInitialManagedDownloadSettings(
@@ -95,6 +103,20 @@ internal fun resolveInitialManagedDownloadSettings(
             fileNameTemplate = resolved.fileNameTemplate?.takeIf(String::isNotBlank)
         )
     }
+}
+
+internal fun resolveInitialYouTubeReverseProxySettings(
+    currentEnabled: Boolean = false,
+    currentBaseUrl: String = "",
+    loadEnabled: () -> Boolean,
+    loadBaseUrl: () -> String?
+): InitialYouTubeReverseProxySettings {
+    return InitialYouTubeReverseProxySettings(
+        enabled = runCatching(loadEnabled).getOrDefault(currentEnabled),
+        baseUrl = normalizeYouTubeReverseProxyBaseUrl(
+            runCatching(loadBaseUrl).getOrDefault(currentBaseUrl)
+        ).orEmpty()
+    )
 }
 
 internal fun handleYouTubeAuthStateChanged(
@@ -134,7 +156,8 @@ object AppContainer {
             context = application,
             authProvider = youtubeAuthRepo::getAuthOnce,
             authHealthProvider = youtubeAuthRepo::getAuthHealthOnce,
-            authUpdater = youtubeAuthRepo::saveAuth
+            authUpdater = youtubeAuthRepo::saveAuth,
+            reverseProxyEnabledProvider = YouTubeReverseProxyRuntime::isEnabled
         )
     }
 
@@ -196,6 +219,16 @@ object AppContainer {
                 }
                 chain.proceed(builder.build())
             }
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val rewrittenUrl = YouTubeReverseProxyRuntime.rewrite(request.url)
+                    ?: return@addInterceptor chain.proceed(request)
+                chain.proceed(
+                    request.newBuilder()
+                        .url(rewrittenUrl)
+                        .build()
+                )
+            }
             .build()
     }
 
@@ -228,7 +261,8 @@ object AppContainer {
             settings = settingsRepo,
             authProvider = youtubeAuthRepo::getAuthOnce,
             authAutoRefreshManager = youtubeAuthAutoRefreshManager,
-            applicationContext = application
+            applicationContext = application,
+            youtubeReverseProxyEnabledProvider = YouTubeReverseProxyRuntime::isEnabled
         )
     }
 
@@ -267,6 +301,24 @@ object AppContainer {
                 settingsRepo.bypassProxyFlow.first()
             }
         }
+        val initialYouTubeReverseProxySettings = resolveInitialYouTubeReverseProxySettings(
+            currentEnabled = YouTubeReverseProxyRuntime.isEnabled(),
+            currentBaseUrl = YouTubeReverseProxyRuntime.baseUrl(),
+            loadEnabled = {
+                runBlocking {
+                    settingsRepo.youtubeReverseProxyEnabledFlow.first()
+                }
+            },
+            loadBaseUrl = {
+                runBlocking {
+                    settingsRepo.youtubeReverseProxyBaseUrlFlow.first()
+                }
+            }
+        )
+        YouTubeReverseProxyRuntime.update(
+            enabled = initialYouTubeReverseProxySettings.enabled,
+            baseUrl = initialYouTubeReverseProxySettings.baseUrl
+        )
 
         val initialManagedDownloadSettings = resolveInitialManagedDownloadSettings(
             loadDirectoryUri = {
@@ -324,6 +376,28 @@ object AppContainer {
                 DynamicProxySelector.bypassProxy = enabled
                 sharedOkHttpClient.connectionPool.evictAll()
                 neteaseClient.evictConnections()
+            }
+            .launchIn(scope)
+
+        combine(
+            settingsRepo.youtubeReverseProxyEnabledFlow,
+            settingsRepo.youtubeReverseProxyBaseUrlFlow
+        ) { enabled, baseUrl ->
+            enabled to baseUrl
+        }
+            .onEach { (enabled, baseUrl) ->
+                val previousEnabled = YouTubeReverseProxyRuntime.isEnabled()
+                val previousBaseUrl = YouTubeReverseProxyRuntime.baseUrl()
+                YouTubeReverseProxyRuntime.update(enabled = enabled, baseUrl = baseUrl)
+                if (previousEnabled == YouTubeReverseProxyRuntime.isEnabled() &&
+                    previousBaseUrl == YouTubeReverseProxyRuntime.baseUrl()
+                ) {
+                    return@onEach
+                }
+                youtubeMusicClient.clearBootstrapCache()
+                youtubeMusicPlaybackRepository.clearAuthBoundCaches(false)
+                sharedOkHttpClient.connectionPool.evictAll()
+                youtubeMusicPlaybackRepository.warmBootstrapAsync()
             }
             .launchIn(scope)
 
