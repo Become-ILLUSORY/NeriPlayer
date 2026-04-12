@@ -25,3 +25,11 @@ local.properties
 /.kotlin/
 demo
 .idea
+/.gradle-alt-build/
+/build-logic/convention/build/
+/build-logic/.kotlin/
+/buildSrc/build/
+/buildSrc/.kotlin/
+/build-logic/convention/bin/
+/.cpu-perfetto/
+/.har/

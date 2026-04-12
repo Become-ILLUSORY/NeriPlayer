@@ -98,7 +98,6 @@ import coil.compose.AsyncImage
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
-import moe.ouom.neriplayer.core.player.AudioDownloadManager
 import moe.ouom.neriplayer.core.player.PlayerManager
 import moe.ouom.neriplayer.data.local.media.isLocalSong
 import moe.ouom.neriplayer.data.local.media.displayAlbum
@@ -191,8 +190,7 @@ fun RecentScreen(
     // 当前播放态
     val currentSong by PlayerManager.currentSongFlow.collectAsState()
     val isPlaying by PlayerManager.isPlayingFlow.collectAsState()
-    val downloadedSongs by GlobalDownloadManager.downloadedSongs.collectAsState()
-    val downloadedSongFilePaths = remember(downloadedSongs) { downloadedSongs.map { it.filePath } }
+    val downloadPresenceVersion by GlobalDownloadManager.downloadPresenceVersion.collectAsState()
 
     // 清空确认
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -351,7 +349,7 @@ fun RecentScreen(
                     RecentRowRich(
                         index = index + 1,
                         song = song,
-                        downloadedSongFilePaths = downloadedSongFilePaths,
+                        downloadPresenceVersion = downloadPresenceVersion,
                         selectionMode = selectionMode,
                         selected = song.stableKey() in selectedKeys,
                         isCurrentSong = currentSong?.sameIdentityAs(song) == true,
@@ -467,7 +465,7 @@ fun RecentScreen(
 private fun RecentRowRich(
     index: Int,
     song: SongItem,
-    downloadedSongFilePaths: List<String>,
+    downloadPresenceVersion: Int,
     selectionMode: Boolean,
     selected: Boolean,
     isCurrentSong: Boolean,
@@ -552,7 +550,12 @@ private fun RecentRowRich(
         // 封面
         if (!coverUrl.isNullOrBlank()) {
             AsyncImage(
-                model = offlineCachedImageRequest(ctx, coverUrl),
+                model = offlineCachedImageRequest(
+                    context = ctx,
+                    data = coverUrl,
+                    sizePx = 192,
+                    allowHardware = false
+                ),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -574,8 +577,8 @@ private fun RecentRowRich(
                     style = MaterialTheme.typography.titleMedium
                 )
                 // 已下载标志
-                if (remember(downloadedSongFilePaths, song) {
-                        AudioDownloadManager.hasLocalDownload(ctx, song)
+                if (remember(downloadPresenceVersion, song) {
+                        GlobalDownloadManager.hasDownloadedSongCached(song)
                     }) {
                     Spacer(Modifier.width(6.dp))
                     Icon(

@@ -37,6 +37,7 @@ import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
+import moe.ouom.neriplayer.data.auth.common.parseRawCookieText
 import org.json.JSONObject
 
 data class NeteaseAuthUiState(
@@ -46,7 +47,8 @@ data class NeteaseAuthUiState(
     val loggingIn: Boolean = false,
     val countdownSec: Int = 0,
     val isLoggedIn: Boolean = false,
-    val health: SavedCookieAuthHealth = SavedCookieAuthHealth()
+    val health: SavedCookieAuthHealth = SavedCookieAuthHealth(),
+    val hasSavedCookies: Boolean = false
 )
 
 sealed interface NeteaseAuthEvent {
@@ -54,7 +56,6 @@ sealed interface NeteaseAuthEvent {
     data class AskConfirmSend(val masked: String) : NeteaseAuthEvent
     data class ShowCookies(val cookies: Map<String, String>) : NeteaseAuthEvent
     data object LoginSuccess : NeteaseAuthEvent
-    data class PromptReauth(val health: SavedCookieAuthHealth) : NeteaseAuthEvent
 }
 
 class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
@@ -66,7 +67,8 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(
         NeteaseAuthUiState(
             health = cookieRepo.getAuthHealth(),
-            isLoggedIn = cookieRepo.getAuthHealth().state != SavedCookieAuthState.Missing
+            isLoggedIn = cookieRepo.getAuthHealth().state != SavedCookieAuthState.Missing,
+            hasSavedCookies = cookieRepo.getCookiesOnce().isNotEmpty()
         )
     )
     val uiState: StateFlow<NeteaseAuthUiState> = _uiState.asStateFlow()
@@ -74,56 +76,47 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     private val _events = MutableSharedFlow<NeteaseAuthEvent>(extraBufferCapacity = 8)
     val events: MutableSharedFlow<NeteaseAuthEvent> = _events
 
-    private var lastPromptSignature: String? = null
-
     init {
         viewModelScope.launch(Dispatchers.IO) {
             cookieRepo.cookieFlow.collect { saved ->
                 cookieStore.clear()
                 cookieStore.putAll(saved)
+                _uiState.value = _uiState.value.copy(
+                    hasSavedCookies = saved.isNotEmpty()
+                )
             }
         }
         viewModelScope.launch {
             cookieRepo.authHealthFlow.collect { health ->
                 _uiState.value = _uiState.value.copy(
                     health = health,
-                    isLoggedIn = health.state != SavedCookieAuthState.Missing &&
-                        health.state != SavedCookieAuthState.Expired
+                    isLoggedIn = health.state != SavedCookieAuthState.Missing
                 )
-                if (!health.shouldPromptRelogin) {
-                    lastPromptSignature = null
-                }
             }
         }
     }
 
-    fun refreshAuthHealth(
-        promptIfNeeded: Boolean = false,
-        forcePrompt: Boolean = false
-    ) {
+    fun refreshAuthHealth() {
         viewModelScope.launch(Dispatchers.IO) {
             cookieRepo.refreshHealth()
-            var health = cookieRepo.getAuthHealthOnce()
-            if (health.state != SavedCookieAuthState.Missing) {
-                health = health.copy(
-                    state = SavedCookieAuthState.Checking,
-                    checkedAt = System.currentTimeMillis()
-                )
-                _uiState.value = _uiState.value.copy(
-                    health = health,
-                    isLoggedIn = true
-                )
-                health = validateCurrentAuth(cookieRepo.getAuthHealthOnce())
-            }
-
+            val health = cookieRepo.getAuthHealthOnce()
             _uiState.value = _uiState.value.copy(
                 health = health,
-                isLoggedIn = health.state != SavedCookieAuthState.Missing &&
-                    health.state != SavedCookieAuthState.Expired
+                isLoggedIn = health.state != SavedCookieAuthState.Missing
             )
-            if (promptIfNeeded) {
-                emitPromptIfNeeded(health, forcePrompt)
-            }
+        }
+    }
+
+    fun clearCookies() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { api.logout() }
+            cookieStore.clear()
+            cookieRepo.clear()
+            _events.tryEmit(
+                NeteaseAuthEvent.ShowSnack(
+                    getApplication<Application>().getString(R.string.auth_cookie_cleared)
+                )
+            )
         }
     }
 
@@ -268,46 +261,12 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun importCookiesFromRaw(raw: String) {
-        val parsed = linkedMapOf<String, String>()
-        raw.split(';')
-            .map { it.trim() }
-            .filter { it.isNotBlank() && it.contains('=') }
-            .forEach { s ->
-                val idx = s.indexOf('=')
-                if (idx > 0) {
-                    val key = s.substring(0, idx).trim()
-                    val value = s.substring(idx + 1).trim()
-                    if (key.isNotEmpty()) parsed[key] = value
-                }
-            }
+        val parsed = parseRawCookieText(raw)
         if (parsed.isEmpty()) {
             emitSnack(getApplication<Application>().getString(R.string.auth_cookie_invalid))
             return
         }
         importCookiesFromMap(parsed)
-    }
-
-    private fun validateCurrentAuth(localHealth: SavedCookieAuthHealth): SavedCookieAuthHealth {
-        val checkedAt = System.currentTimeMillis()
-        return runCatching {
-            val raw = api.getCurrentUserAccount()
-            val root = JSONObject(raw)
-            val code = root.optInt("code", -1)
-            val userId = root.optJSONObject("profile")?.optLong("userId", 0L) ?: 0L
-            if (code == 200 && userId > 0L) {
-                localHealth.copy(
-                    state = SavedCookieAuthState.Valid,
-                    checkedAt = checkedAt
-                )
-            } else {
-                localHealth.copy(
-                    state = SavedCookieAuthState.Expired,
-                    checkedAt = checkedAt
-                )
-            }
-        }.getOrElse {
-            localHealth.copy(checkedAt = checkedAt)
-        }
     }
 
     private fun startCountdown() {
@@ -319,28 +278,6 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
                 left--
             }
         }
-    }
-
-    private fun emitPromptIfNeeded(
-        health: SavedCookieAuthHealth,
-        forcePrompt: Boolean
-    ) {
-        if (!health.shouldPromptRelogin) {
-            lastPromptSignature = null
-            return
-        }
-
-        val promptSignature = buildString {
-            append(health.state.name)
-            append(':')
-            append(health.savedAt)
-        }
-        if (!forcePrompt && promptSignature == lastPromptSignature) {
-            return
-        }
-
-        lastPromptSignature = promptSignature
-        _events.tryEmit(NeteaseAuthEvent.PromptReauth(health))
     }
 
     private fun isValidPhone(p: String): Boolean = p.length == 11 && p.all { it.isDigit() }

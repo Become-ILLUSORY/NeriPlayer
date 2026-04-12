@@ -34,9 +34,9 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
@@ -54,8 +54,8 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -124,7 +124,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -137,7 +136,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -153,6 +151,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -185,43 +184,46 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.search.MusicPlatform
 import moe.ouom.neriplayer.core.api.search.SongSearchInfo
-import moe.ouom.neriplayer.core.download.DownloadStatus
-import moe.ouom.neriplayer.core.download.GlobalDownloadManager
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.core.download.DownloadStatus
+import moe.ouom.neriplayer.core.download.isDownloadTaskCancellable
+import moe.ouom.neriplayer.core.download.isDownloadTaskFinalizing
+import moe.ouom.neriplayer.core.download.GlobalDownloadManager
+import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
+import moe.ouom.neriplayer.core.download.shouldHideRemoteDownloadAction
 import moe.ouom.neriplayer.core.player.AudioDownloadManager
 import moe.ouom.neriplayer.core.player.PlayerManager
-import moe.ouom.neriplayer.core.player.model.MAX_PLAYBACK_PITCH
-import moe.ouom.neriplayer.core.player.model.MAX_PLAYBACK_SPEED
-import moe.ouom.neriplayer.core.player.model.MIN_PLAYBACK_PITCH
-import moe.ouom.neriplayer.core.player.model.MIN_PLAYBACK_SPEED
+import moe.ouom.neriplayer.core.player.metadata.extractPreferredNeteaseLyricContent
 import moe.ouom.neriplayer.core.player.model.PlaybackAudioInfo
-import moe.ouom.neriplayer.core.player.model.PlaybackEqualizerPresetId
 import moe.ouom.neriplayer.core.player.model.PlaybackQualityOption
-import moe.ouom.neriplayer.core.player.model.PlaybackEqualizerPresets
-import moe.ouom.neriplayer.core.player.model.findPlaybackEqualizerPreset
-import moe.ouom.neriplayer.core.player.model.formatEqualizerFrequencyLabel
-import moe.ouom.neriplayer.data.settings.MAX_LYRIC_FONT_SCALE
-import moe.ouom.neriplayer.data.settings.MIN_LYRIC_FONT_SCALE
+import moe.ouom.neriplayer.data.local.media.LocalMediaSupport
+import moe.ouom.neriplayer.data.local.media.isLocalSong
 import moe.ouom.neriplayer.data.local.playlist.system.FavoritesPlaylist
 import moe.ouom.neriplayer.data.local.playlist.system.LocalFilesPlaylist
-import moe.ouom.neriplayer.data.local.media.LocalMediaSupport
 import moe.ouom.neriplayer.data.model.displayArtist
 import moe.ouom.neriplayer.data.model.displayCoverUrl
 import moe.ouom.neriplayer.data.model.displayName
-import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
-import moe.ouom.neriplayer.data.local.media.isLocalSong
-import moe.ouom.neriplayer.data.settings.normalizeLyricFontScale
-import moe.ouom.neriplayer.data.settings.scaledLyricFontSize
-import moe.ouom.neriplayer.data.platform.youtube.isYouTubeMusicSong
 import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
+import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
+import moe.ouom.neriplayer.data.platform.youtube.isYouTubeMusicSong
+import moe.ouom.neriplayer.data.settings.MAX_LYRIC_FONT_SCALE
+import moe.ouom.neriplayer.data.settings.MIN_LYRIC_FONT_SCALE
+import moe.ouom.neriplayer.data.settings.normalizeLyricFontScale
+import moe.ouom.neriplayer.data.settings.scaledLyricFontSize
 import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.component.AppleMusicLyric
+import moe.ouom.neriplayer.ui.component.flattenWordTimedEntries
+import moe.ouom.neriplayer.ui.component.hasWordTimedEntries
+import moe.ouom.neriplayer.ui.component.isNeteaseYrc
 import moe.ouom.neriplayer.ui.component.LocalSongDetailsDialog
 import moe.ouom.neriplayer.ui.component.LocalSongSyncConfirmDialog
 import moe.ouom.neriplayer.ui.component.LyricEntry
@@ -233,12 +235,13 @@ import moe.ouom.neriplayer.ui.component.SleepTimerDialog
 import moe.ouom.neriplayer.ui.component.WaveformSlider
 import moe.ouom.neriplayer.ui.component.bottomSheetDragBlocker
 import moe.ouom.neriplayer.ui.component.bottomSheetScrollGuard
-import moe.ouom.neriplayer.ui.component.parseNeteaseLrc
-import moe.ouom.neriplayer.ui.component.parseNeteaseYrc
+import moe.ouom.neriplayer.ui.component.parseNeteaseLyricsAuto
+import moe.ouom.neriplayer.ui.component.resolvePreferredLyricContent
+import moe.ouom.neriplayer.ui.component.toEditableLyricsText
 import moe.ouom.neriplayer.ui.screen.debug.ListenTogetherRoomPanel
 import moe.ouom.neriplayer.ui.viewmodel.NowPlayingViewModel
 import moe.ouom.neriplayer.ui.viewmodel.playlist.SongItem
-import moe.ouom.neriplayer.ui.viewmodel.tab.NeteaseAlbum
+import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.util.HapticFilledIconButton
 import moe.ouom.neriplayer.util.HapticIconButton
 import moe.ouom.neriplayer.util.HapticTextButton
@@ -246,7 +249,6 @@ import moe.ouom.neriplayer.util.NPLogger
 import moe.ouom.neriplayer.util.formatDuration
 import moe.ouom.neriplayer.util.offlineCachedImageRequest
 import moe.ouom.neriplayer.util.saveCoverToPictures
-import java.util.Locale
 import kotlin.math.roundToInt
 
 private const val LyricsPageTransitionDurationMs = 300
@@ -254,7 +256,15 @@ private const val CoverSourceBadgeRevealBufferMs = 120
 private const val CoverSourceBadgeRevealDelayMs =
     LyricsPageTransitionDurationMs + CoverSourceBadgeRevealBufferMs
 
-internal fun shouldHideDownloadActionForSong(hasLocalDownload: Boolean): Boolean = hasLocalDownload
+internal fun shouldHideDownloadActionForSong(
+    hasLocalDownload: Boolean,
+    currentTask: moe.ouom.neriplayer.core.download.DownloadTask?
+): Boolean = shouldHideRemoteDownloadAction(hasLocalDownload, currentTask)
+
+private fun hasCachedLocalDownload(song: SongItem): Boolean {
+    return GlobalDownloadManager.hasDownloadedSongCached(song) ||
+        ManagedDownloadStorage.peekDownloadedAudio(song) != null
+}
 
 private fun buildRemoteSongShareUrl(originalSong: SongItem, queue: List<SongItem>): String {
     extractYouTubeMusicVideoId(originalSong.mediaUri)?.let { videoId ->
@@ -285,24 +295,40 @@ private fun buildRemoteSongShareUrl(originalSong: SongItem, queue: List<SongItem
     }
 }
 
+private fun resolvePreferredNeteaseLyricSongId(song: SongItem?): Long? {
+    if (song == null) {
+        return null
+    }
+    val matchedSongId = song.matchedSongId?.toLongOrNull()
+    if (matchedSongId != null && matchedSongId > 0) {
+        return matchedSongId
+    }
+    val isDirectNeteaseSong = song.matchedLyricSource == MusicPlatform.CLOUD_MUSIC ||
+        song.album.startsWith(PlayerManager.NETEASE_SOURCE_TAG) ||
+        song.mediaUri?.contains("music.163.com") == true
+    return if (isDirectNeteaseSong) song.id.takeIf { it > 0L } else null
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
 @Suppress("AssignedValueIsNeverRead")
 fun NowPlayingScreen(
     onNavigateUp: () -> Unit,
-    onEnterAlbum: (NeteaseAlbum) -> Unit,
+    onEnterAlbum: (AlbumSummary) -> Unit,
     lyricBlurEnabled: Boolean,
     lyricBlurAmount: Float,
     lyricFontScale: Float,
     onLyricFontScaleChange: (Float) -> Unit,
+    advancedLyricsEnabled: Boolean = true,
     showCoverSourceBadge: Boolean = true,
     showLyricTranslation: Boolean = true,
+    showNowPlayingTitle: Boolean = true,
 ) {
     val currentSong by PlayerManager.currentSongFlow.collectAsState()
     val isPlaying by PlayerManager.isPlayingFlow.collectAsState()
+    val isPlaybackControlPlaying by PlayerManager.playbackControlPlayingFlow.collectAsState()
     val shuffleEnabled by PlayerManager.shuffleModeFlow.collectAsState()
     val repeatMode by PlayerManager.repeatModeFlow.collectAsState()
-    val currentPosition by PlayerManager.playbackPositionFlow.collectAsState()
     val durationMs = currentSong?.durationMs ?: 0L
     val sleepTimerState by PlayerManager.sleepTimerManager.timerState.collectAsState()
     val currentPlaybackAudioInfo by PlayerManager.currentPlaybackAudioInfoFlow.collectAsState()
@@ -345,7 +371,9 @@ fun NowPlayingScreen(
 
     val playlists by PlayerManager.playlistsFlow.collectAsState()
     val context = LocalContext.current
-    val currentCoverUrl = currentSong?.displayCoverUrl(context)
+    val currentCoverUrl = remember(currentSong, context) {
+        currentSong?.displayCoverUrl(context)
+    }
 
     // 点击即切换，回流后撤销覆盖
     var favOverride by remember(currentSong) { mutableStateOf<Boolean?>(null) }
@@ -360,8 +388,10 @@ fun NowPlayingScreen(
 
     val queue by PlayerManager.currentQueueFlow.collectAsState()
     val displayedQueue = remember(queue) { queue }
-    val currentIndexInDisplay = displayedQueue.indexOfFirst {
-        it.sameIdentityAs(currentSong)
+    val currentIndexInDisplay = remember(displayedQueue, currentSong) {
+        displayedQueue.indexOfFirst {
+            it.sameIdentityAs(currentSong)
+        }
     }
 
     var showAddSheet by remember { mutableStateOf(false) }
@@ -447,12 +477,6 @@ fun NowPlayingScreen(
         }
     }
 
-    // 是否拖拽进度条
-    var isUserDraggingSlider by remember(currentSong?.id) { mutableStateOf(false) }
-    var sliderPosition by remember(currentSong?.id) {
-        mutableFloatStateOf(PlayerManager.playbackPositionFlow.value.toFloat())
-    }
-
     // 内容的进入动画
     var contentVisible by remember { mutableStateOf(false) }
 
@@ -462,48 +486,77 @@ fun NowPlayingScreen(
 
     var lyrics by remember(currentSong?.id) { mutableStateOf<List<LyricEntry>>(emptyList()) }
     var translatedLyrics by remember(currentSong?.id) { mutableStateOf<List<LyricEntry>>(emptyList()) }
-
     val nowPlayingViewModel: NowPlayingViewModel = viewModel()
 
-    LaunchedEffect(currentSong?.id, currentSong?.matchedLyric, currentSong?.matchedTranslatedLyric, isFromNetease) {
+    LaunchedEffect(
+        currentSong?.id,
+        currentSong?.matchedLyric,
+        currentSong?.matchedTranslatedLyric,
+        isFromNetease,
+        currentMediaUrl
+    ) {
         val song = currentSong
-        lyrics = when {
-            // 优先使用匹配到的歌词
-            song?.matchedLyric != null -> {
-                if (song.matchedLyric.contains(Regex("""\[\d+,\s*\d+]\(\d+,"""))) {
-                    parseNeteaseYrc(song.matchedLyric)
+        val (loadedLyrics, loadedTranslatedLyrics) = withContext(Dispatchers.IO) {
+            val preferredNeteaseLyric = runCatching {
+                val shouldUpgradeMatchedLyric = song?.matchedLyric?.let(::isNeteaseYrc) != true
+                val preferredSongId = resolvePreferredNeteaseLyricSongId(song)
+                if (shouldUpgradeMatchedLyric && preferredSongId != null) {
+                    extractPreferredNeteaseLyricContent(
+                        AppContainer.neteaseClient.getLyricNew(preferredSongId)
+                    )
                 } else {
-                    parseNeteaseLrc(song.matchedLyric)
+                    ""
                 }
-            }
-            song != null -> {
-                // 在线拉取歌词
-                PlayerManager.getLyrics(song)
-            }
-            else -> {
-                emptyList()
-            }
-        }
-
-        // 同步尝试拉取翻译（仅云音乐有）
-        translatedLyrics = try {
-            when {
-                // 优先使用存储的翻译歌词
-                song?.matchedTranslatedLyric != null -> {
-                    parseNeteaseLrc(song.matchedTranslatedLyric)
+            }.getOrNull().orEmpty()
+            val effectiveRawLyrics = resolvePreferredLyricContent(
+                matchedLyric = song?.matchedLyric,
+                preferredNeteaseLyric = preferredNeteaseLyric
+            )
+            val shouldDelayOnlineLyrics =
+                song != null &&
+                    extractYouTubeMusicVideoId(song.mediaUri) != null &&
+                    currentMediaUrl.isNullOrBlank()
+            val resolvedLyrics = when {
+                !effectiveRawLyrics.isNullOrBlank() -> {
+                    parseNeteaseLyricsAuto(effectiveRawLyrics)
+                }
+                shouldDelayOnlineLyrics -> {
+                    // 当前曲目还在抢首播地址，先别让歌词请求去争 EJS 和鉴权链路
+                    emptyList()
                 }
                 song != null -> {
-                    PlayerManager.getTranslatedLyrics(song)
+                    // 在线拉取歌词
+                    PlayerManager.getLyrics(song)
                 }
-                else -> emptyList()
+                else -> {
+                    emptyList()
+                }
             }
-        } catch (_: Exception) {
-            emptyList()
+
+            val resolvedTranslatedLyrics = try {
+                when {
+                    // 优先使用存储的翻译歌词
+                    !song?.matchedTranslatedLyric.isNullOrBlank() -> {
+                        parseNeteaseLyricsAuto(song!!.matchedTranslatedLyric!!)
+                    }
+                    song != null -> {
+                        PlayerManager.getTranslatedLyrics(song)
+                    }
+                    else -> emptyList()
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            resolvedLyrics to resolvedTranslatedLyrics
         }
+        lyrics = loadedLyrics
+        translatedLyrics = loadedTranslatedLyrics
     }
+    val plainLyrics = remember(lyrics) { lyrics.flattenWordTimedEntries() }
+    val plainTranslatedLyrics = remember(translatedLyrics) { translatedLyrics.flattenWordTimedEntries() }
+    var previewPositionOverrideMs by remember(currentSong?.id) { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(Unit) { contentVisible = true }
-    LaunchedEffect(currentPosition) { if (!isUserDraggingSlider) sliderPosition = currentPosition.toFloat() }
     LaunchedEffect(currentSong?.id) { showQualitySwitchDialog = false }
     LaunchedEffect(showLyricsScreen, showCoverSourceBadge) {
         val returningFromLyrics = previousLyricsScreenState && !showLyricsScreen
@@ -627,6 +680,7 @@ fun NowPlayingScreen(
                             onLyricFontScaleChange = onLyricFontScaleChange,
                             onNavigateBack = { showLyricsScreen = false },
                             onSeekTo = { position -> PlayerManager.seekTo(position) },
+                            advancedLyricsEnabled = advancedLyricsEnabled,
                             translatedLyrics = translatedLyrics,
                             lyricOffsetMs = totalOffset,
                             showLyricTranslation = showLyricTranslation,
@@ -679,11 +733,13 @@ fun NowPlayingScreen(
                         }
 
                         // 标题 - 居中
-                        Text(
-                            text = stringResource(R.string.player_now_playing),
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.align(Alignment.Center)
-                        )
+                        if (showNowPlayingTitle) {
+                            Text(
+                                text = stringResource(R.string.player_now_playing),
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+                        }
 
                         // 收藏和更多按钮 - 右侧
                         Row(
@@ -717,7 +773,11 @@ fun NowPlayingScreen(
                                 Icon(
                                     imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                                     contentDescription = if (isFavorite) stringResource(R.string.nowplaying_favorited) else stringResource(R.string.nowplaying_favorite),
-                                    tint = if (isFavorite) Color.Red else MaterialTheme.colorScheme.onSurface
+                                    tint = if (isFavorite) {
+                                        Color.Red.copy(alpha = 0.6f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
                             }
 
@@ -740,6 +800,8 @@ fun NowPlayingScreen(
                                     viewModel = nowPlayingViewModel,
                                     originalSong = currentSong!!,
                                     queue = displayedQueue,
+                                    displayedLyrics = lyrics,
+                                    displayedTranslatedLyrics = translatedLyrics,
                                     onDismiss = { showMoreOptions = false },
                                     onShowSongDetails = { detailSong = it },
                                     onEnterAlbum = onEnterAlbum,
@@ -772,6 +834,9 @@ fun NowPlayingScreen(
                             )
                             isLandscape -> minOf(windowWidthDp * 0.45f, maxHeight * 0.5f, maxWidth)
                             else -> minOf(maxWidth * 0.6f, maxHeight * 0.65f)
+                        }
+                        val coverRequestSizePx = with(LocalDensity.current) {
+                            coverSize.roundToPx().coerceAtLeast(256)
                         }
                         Box(
                             modifier = Modifier
@@ -812,7 +877,14 @@ fun NowPlayingScreen(
                             ) {
                                 currentCoverUrl?.let { cover ->
                                     AsyncImage(
-                                        model = offlineCachedImageRequest(context, cover),
+                                        model = remember(context, cover, coverRequestSizePx) {
+                                            offlineCachedImageRequest(
+                                                context = context,
+                                                data = cover,
+                                                sizePx = coverRequestSizePx,
+                                                allowHardware = false
+                                            )
+                                        },
                                         contentDescription = currentSong?.customName ?: currentSong?.name ?: "",
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()
@@ -955,53 +1027,20 @@ fun NowPlayingScreen(
 
                     Spacer(Modifier.height(12.dp))
 
-                    // 进度条
-                    Row(
+                    NowPlayingProgressSection(
+                        songKey = currentSong?.stableKey(),
+                        durationMs = durationMs,
+                        isPlaying = isPlaying,
+                        progressInfoSegments = progressInfoSegments,
+                        useWideLandscapeLayout = useWideLandscapeLayout,
+                        onPreviewPositionChange = { previewPositionOverrideMs = it },
                         modifier = Modifier
                             .fillMaxWidth(if (useWideLandscapeLayout) 0.88f else 1f)
                             .sharedBounds(
                                 rememberSharedContentState(key = "progress_bar"),
                                 animatedVisibilityScope = this@AnimatedContent
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = formatDuration(sliderPosition.toLong()),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        WaveformSlider(
-                            modifier = Modifier.weight(1f),
-                            value = if (durationMs > 0) sliderPosition / durationMs else 0f,
-                            onValueChange = { newPercentage ->
-                                isUserDraggingSlider = true
-                                sliderPosition = (newPercentage * durationMs)
-                            },
-                            onValueChangeFinished = {
-                                PlayerManager.seekTo(sliderPosition.toLong())
-                                isUserDraggingSlider = false
-                            },
-                            isPlaying = isPlaying
-                        )
-
-                        Text(
-                            text = formatDuration(durationMs),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    if (progressInfoSegments.isNotEmpty()) {
-                        Spacer(Modifier.height(0.dp))
-                        NowPlayingProgressInfoRow(
-                            segments = progressInfoSegments,
-                            modifier = Modifier
-                                .fillMaxWidth(if (useWideLandscapeLayout) 0.88f else 1f)
-                                .offset(y = if (useWideLandscapeLayout) (-5).dp else (-6).dp)
-                        )
-                    }
+                            )
+                    )
 
                     Spacer(Modifier.height(if (useWideLandscapeLayout) 14.dp else 10.dp))
 
@@ -1043,7 +1082,7 @@ fun NowPlayingScreen(
                                 .size(primaryControlButtonSize)
                         ) {
                             AnimatedContent(
-                                targetState = isPlaying,
+                                targetState = isPlaybackControlPlaying,
                                 label = "play_pause_icon",
                                 transitionSpec = { (scaleIn() + fadeIn()) togetherWith (scaleOut() + fadeOut()) }
                             ) { currentlyPlaying ->
@@ -1079,9 +1118,9 @@ fun NowPlayingScreen(
                     if (!useWideLandscapeLayout && lyrics.isNotEmpty()) {
                         Spacer(Modifier.weight(1f))
 
-                        AppleMusicLyric(
-                            lyrics = lyrics,
-                            currentTimeMs = currentPosition,
+                        NowPlayingLyricsPane(
+                            lyrics = plainLyrics,
+                            previewPositionOverrideMs = previewPositionOverrideMs,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(8f),
@@ -1093,7 +1132,7 @@ fun NowPlayingScreen(
                             lyricBlurEnabled = lyricBlurEnabled,
                             lyricBlurAmount = lyricBlurAmount,
                             onLyricClick = { entry -> PlayerManager.seekTo(entry.startTimeMs) },
-                            translatedLyrics = if (showLyricTranslation) translatedLyrics else null
+                            translatedLyrics = if (showLyricTranslation) plainTranslatedLyrics else null
                         )
                     }
 
@@ -1283,9 +1322,9 @@ fun NowPlayingScreen(
                                 .fillMaxHeight()
                         ) {
                             if (lyrics.isNotEmpty()) {
-                                AppleMusicLyric(
-                                    lyrics = lyrics,
-                                    currentTimeMs = currentPosition,
+                                NowPlayingLyricsPane(
+                                    lyrics = plainLyrics,
+                                    previewPositionOverrideMs = previewPositionOverrideMs,
                                     modifier = Modifier.fillMaxSize(),
                                     textColor = MaterialTheme.colorScheme.onBackground,
                                     fontSize = scaledLyricFontSize(18f, lyricFontScale).sp,
@@ -1295,7 +1334,7 @@ fun NowPlayingScreen(
                                     lyricBlurEnabled = lyricBlurEnabled,
                                     lyricBlurAmount = lyricBlurAmount,
                                     onLyricClick = { entry -> PlayerManager.seekTo(entry.startTimeMs) },
-                                    translatedLyrics = if (showLyricTranslation) translatedLyrics else null
+                                    translatedLyrics = if (showLyricTranslation) plainTranslatedLyrics else null
                                 )
                             } else {
                                 Column(
@@ -1362,7 +1401,11 @@ fun NowPlayingScreen(
                         state = listState,
                         modifier = Modifier.bottomSheetScrollGuard()
                     ) {
-                        itemsIndexed(displayedQueue) { index, song ->
+                        itemsIndexed(
+                            items = displayedQueue,
+                            key = { _, song -> song.stableKey() },
+                            contentType = { _, _ -> "queue_song" }
+                        ) { index, song ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1463,7 +1506,11 @@ fun NowPlayingScreen(
                     sheetGesturesEnabled = false
                 ) {
                     LazyColumn(modifier = Modifier.bottomSheetScrollGuard()) {
-                        itemsIndexed(selectablePlaylists) { _, pl ->
+                        itemsIndexed(
+                            items = selectablePlaylists,
+                            key = { _, pl -> pl.id },
+                            contentType = { _, _ -> "playlist_option" }
+                        ) { _, pl ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1574,9 +1621,11 @@ fun MoreOptionsSheet(
     viewModel: NowPlayingViewModel,
     originalSong: SongItem,
     queue: List<SongItem>,
+    displayedLyrics: List<LyricEntry>,
+    displayedTranslatedLyrics: List<LyricEntry>,
     onDismiss: () -> Unit,
     onShowSongDetails: (SongItem) -> Unit = {},
-    onEnterAlbum: (NeteaseAlbum) -> Unit,
+    onEnterAlbum: (AlbumSummary) -> Unit,
     onNavigateUp: () -> Unit,
     snackbarHostState: SnackbarHostState,
     lyricFontScale: Float,
@@ -1603,16 +1652,24 @@ fun MoreOptionsSheet(
     val canSwitchQuality = qualityOptions.size > 1
     val currentQualityLabel = currentPlaybackAudioInfo?.qualityLabel
     val playbackSoundState by PlayerManager.playbackSoundStateFlow.collectAsState()
-    val downloadedSongs by GlobalDownloadManager.downloadedSongs.collectAsState()
+    val downloadPresenceVersion by GlobalDownloadManager.downloadPresenceVersion.collectAsState()
     val downloadTasks by GlobalDownloadManager.downloadTasks.collectAsState()
-    val hasLocalDownload = remember(downloadedSongs, originalSong, context) {
-        AudioDownloadManager.hasLocalDownload(context, originalSong)
+    val hasLocalDownload = remember(downloadPresenceVersion, originalSong) {
+        hasCachedLocalDownload(originalSong)
     }
     val downloadSongKey = remember(originalSong) { originalSong.stableKey() }
     val currentDownloadTask = remember(downloadTasks, downloadSongKey) {
         downloadTasks.firstOrNull { it.song.stableKey() == downloadSongKey }
     }
-    val shouldHideDownloadAction = shouldHideDownloadActionForSong(hasLocalDownload)
+    val shouldHideDownloadAction = remember(hasLocalDownload, currentDownloadTask) {
+        shouldHideDownloadActionForSong(hasLocalDownload, currentDownloadTask)
+    }
+    val currentDownloadFinalizing = remember(currentDownloadTask) {
+        isDownloadTaskFinalizing(currentDownloadTask)
+    }
+    val currentDownloadCancellable = remember(currentDownloadTask) {
+        isDownloadTaskCancellable(currentDownloadTask)
+    }
 
     LaunchedEffect(showSearchView) {
         if (showSearchView) {
@@ -1737,12 +1794,17 @@ fun MoreOptionsSheet(
                                 }
                             )
                         } else if (!shouldHideDownloadAction) {
-                            val downloadHeadlineRes = when (currentDownloadTask?.status) {
-                                DownloadStatus.DOWNLOADING -> R.string.download_cancel_download
-                                DownloadStatus.CANCELLED -> R.string.download_to_local
-                                DownloadStatus.FAILED -> R.string.action_retry
+                            val downloadHeadlineRes = when {
+                                currentDownloadTask?.status == DownloadStatus.QUEUED -> R.string.download_cancel_download
+                                currentDownloadTask?.status == DownloadStatus.DOWNLOADING -> R.string.download_cancel_download
+                                currentDownloadTask?.status == DownloadStatus.CANCELLED -> R.string.download_to_local
+                                currentDownloadTask?.status == DownloadStatus.FAILED -> R.string.action_retry
                                 else -> R.string.download_to_local
                             }
+                            val canClickDownloadAction =
+                                (currentDownloadTask?.status != DownloadStatus.QUEUED &&
+                                    currentDownloadTask?.status != DownloadStatus.DOWNLOADING) ||
+                                    currentDownloadCancellable
 
                             ListItem(
                                 headlineContent = {
@@ -1754,20 +1816,34 @@ fun MoreOptionsSheet(
                                         currentDownloadTask?.progress != null -> {
                                             val progress = currentDownloadTask.progress
                                             Column {
-                                                Text(
-                                                    stringResource(
-                                                        R.string.download_progress_file_label,
-                                                        progress.percentage,
-                                                        progress.fileName
+                                                if (progress.stage == AudioDownloadManager.DownloadStage.FINALIZING) {
+                                                    Text(stringResource(R.string.download_finalizing))
+                                                    LinearProgressIndicator(
+                                                        modifier = Modifier.fillMaxWidth()
                                                     )
-                                                )
-                                                LinearProgressIndicator(
-                                                    progress = {
-                                                        progress.bytesRead.toFloat() /
-                                                            progress.totalBytes.toFloat()
-                                                    },
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
+                                                } else {
+                                                    Text(
+                                                        stringResource(
+                                                            R.string.download_progress_file_label,
+                                                            progress.percentage,
+                                                            progress.fileName
+                                                        )
+                                                    )
+                                                    if (progress.totalBytes > 0L) {
+                                                        LinearProgressIndicator(
+                                                            progress = {
+                                                                (progress.bytesRead.toFloat() /
+                                                                    progress.totalBytes.toFloat())
+                                                                    .coerceIn(0f, 1f)
+                                                            },
+                                                            modifier = Modifier.fillMaxWidth()
+                                                        )
+                                                    } else {
+                                                        LinearProgressIndicator(
+                                                            modifier = Modifier.fillMaxWidth()
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
 
@@ -1776,8 +1852,9 @@ fun MoreOptionsSheet(
                                         }
                                     }
                                 },
-                                modifier = Modifier.clickable {
+                                modifier = Modifier.clickable(enabled = canClickDownloadAction) {
                                     when (currentDownloadTask?.status) {
+                                        DownloadStatus.QUEUED,
                                         DownloadStatus.DOWNLOADING -> {
                                             viewModel.cancelDownload(downloadSongKey)
                                         }
@@ -1818,7 +1895,7 @@ fun MoreOptionsSheet(
                         )
                         if (originalSong.album.startsWith(PlayerManager.NETEASE_SOURCE_TAG)) {
                             val albumName = originalSong.album.replace(PlayerManager.NETEASE_SOURCE_TAG, "")
-                            val album = NeteaseAlbum(
+                            val album = AlbumSummary(
                                 id = originalSong.albumId,
                                 name = albumName,
                                 size = 0,
@@ -1949,7 +2026,13 @@ fun MoreOptionsSheet(
                                         !searchResultsListState.canScrollBackward
                                     }
                                 ) {
-                                    items(searchState.searchResults) { songResult ->
+                                    items(
+                                        items = searchState.searchResults,
+                                        key = { songResult ->
+                                            "${songResult.source.name}:${songResult.id}"
+                                        },
+                                        contentType = { "search_result" }
+                                    ) { songResult ->
                                         ListItem(
                                             headlineContent = { Text(songResult.songName, maxLines = 1) },
                                             supportingContent = { Text(songResult.singer, maxLines = 1) },
@@ -2016,6 +2099,8 @@ fun MoreOptionsSheet(
                     EditSongInfoSheet(
                         viewModel = viewModel,
                         originalSong = originalSong,
+                        displayedLyrics = displayedLyrics,
+                        displayedTranslatedLyrics = displayedTranslatedLyrics,
                         onDismiss = { showEditInfoSheet = false },
                         snackbarHostState = snackbarHostState
                     )
@@ -2117,7 +2202,7 @@ private fun NowPlayingProgressInfoRow(
 }
 
 @Composable
-private fun NowPlayingQualityOptionsDialog(
+fun NowPlayingQualityOptionsDialog(
     title: String,
     selectedKey: String?,
     options: List<PlaybackQualityOption>,
@@ -2309,6 +2394,8 @@ fun LyricFontSizeSheet(
 fun EditSongInfoSheet(
     viewModel: NowPlayingViewModel,
     originalSong: SongItem,
+    displayedLyrics: List<LyricEntry>,
+    displayedTranslatedLyrics: List<LyricEntry>,
     onDismiss: () -> Unit,
     snackbarHostState: SnackbarHostState
 ) {
@@ -2464,7 +2551,12 @@ fun EditSongInfoSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     AsyncImage(
-                        model = offlineCachedImageRequest(context, coverUrl),
+                        model = offlineCachedImageRequest(
+                            context = context,
+                            data = coverUrl,
+                            sizePx = 384,
+                            allowHardware = false
+                        ),
                         contentDescription = stringResource(R.string.music_edit_cover),
                         modifier = Modifier
                             .size(120.dp)
@@ -2530,50 +2622,67 @@ fun EditSongInfoSheet(
             HapticTextButton(
                 onClick = {
                     // 在打开编辑器前先获取歌词
+                    val displayedLyricsSnapshot = displayedLyrics.toList()
+                    val displayedTranslatedLyricsSnapshot = displayedTranslatedLyrics.toList()
                     coroutineScope.launch {
                         try {
-                            // 获取原文歌词
-                            val lyrics = if (actualSong.matchedLyric != null) {
-                                actualSong.matchedLyric
-                            } else {
-                                val lyricEntries = PlayerManager.getLyrics(actualSong)
-                                if (lyricEntries.isNotEmpty()) {
-                                    // 将 LyricEntry 列表转换回 LRC 格式
-                                    lyricEntries.joinToString("\n") { entry ->
-                                        val minutes = entry.startTimeMs / 60000
-                                        val seconds = (entry.startTimeMs % 60000) / 1000
-                                        val millis = entry.startTimeMs % 1000
-                                        "[%02d:%02d.%02d]%s".format(minutes, seconds, millis / 10, entry.text)
+                            val (loadedLyrics, loadedTranslatedLyrics) = withContext(Dispatchers.IO) {
+                                val rawNeteaseLyric = runCatching {
+                                    val preferredSongId = resolvePreferredNeteaseLyricSongId(actualSong)
+                                    if (preferredSongId != null) {
+                                        extractPreferredNeteaseLyricContent(
+                                            AppContainer.neteaseClient.getLyricNew(preferredSongId)
+                                        )
+                                    } else {
+                                        null
                                     }
-                                } else {
+                                }.getOrNull().orEmpty()
+                                val displayedLyricsText = displayedLyricsSnapshot.toEditableLyricsText()
+
+                                // 把歌词准备挪到后台，避免打开编辑器时把主线程卡住
+                                val lyrics = when {
+                                    displayedLyricsSnapshot.hasWordTimedEntries() -> displayedLyricsText
+                                    else -> resolvePreferredLyricContent(
+                                        matchedLyric = actualSong.matchedLyric,
+                                        preferredNeteaseLyric = rawNeteaseLyric
+                                    ) ?: run {
+                                        val lyricEntries = PlayerManager.getLyrics(actualSong)
+                                        if (lyricEntries.isNotEmpty()) {
+                                            lyricEntries.toEditableLyricsText()
+                                        } else {
+                                            displayedLyricsText
+                                        }
+                                    }
+                                }
+
+                                val translatedLyrics = try {
+                                    if (actualSong.matchedTranslatedLyric != null) {
+                                        actualSong.matchedTranslatedLyric
+                                    } else {
+                                        val translatedEntries =
+                                            if (displayedTranslatedLyricsSnapshot.isNotEmpty()) {
+                                                displayedTranslatedLyricsSnapshot
+                                            } else {
+                                                PlayerManager.getTranslatedLyrics(actualSong)
+                                            }
+                                        if (translatedEntries.isNotEmpty()) {
+                                            translatedEntries.toEditableLyricsText()
+                                        } else {
+                                            ""
+                                        }
+                                    }
+                                } catch (_: Exception) {
                                     ""
                                 }
+
+                                lyrics to translatedLyrics
                             }
 
-                            // 获取翻译歌词
-                            val translatedLyrics = try {
-                                if (actualSong.matchedTranslatedLyric != null) {
-                                    actualSong.matchedTranslatedLyric
-                                } else {
-                                    val translatedEntries = PlayerManager.getTranslatedLyrics(actualSong)
-                                    if (translatedEntries.isNotEmpty()) {
-                                        translatedEntries.joinToString("\n") { entry ->
-                                            val minutes = entry.startTimeMs / 60000
-                                            val seconds = (entry.startTimeMs % 60000) / 1000
-                                            val millis = entry.startTimeMs % 1000
-                                            "[%02d:%02d.%02d]%s".format(minutes, seconds, millis / 10, entry.text)
-                                        }
-                                    } else {
-                                        ""
-                                    }
-                                }
-                            } catch (_: Exception) {
-                                ""
-                            }
-
-                            lyricsToEdit = lyrics
-                            translatedLyricsToEdit = translatedLyrics
+                            lyricsToEdit = loadedLyrics
+                            translatedLyricsToEdit = loadedTranslatedLyrics
                             showLyricsEditor = true
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             e.printStackTrace()
                             lyricsToEdit = ""
@@ -2655,8 +2764,8 @@ fun EditSongInfoSheet(
                                 NPLogger.d("NowPlayingScreen", "准备调用PlayerManager.updateSongLyricsAndTranslation清除歌词")
                                 PlayerManager.updateSongLyricsAndTranslation(
                                     actualSong,
-                                    null,  // 清空歌词
-                                    null  // 清空翻译歌词
+                                    "",  // 清空歌词
+                                    ""  // 清空翻译歌词
                                 )
                                 NPLogger.d("NowPlayingScreen", "PlayerManager.updateSongLyricsAndTranslation调用完成")
                                 shouldClearLyrics = false  // 重置标志
@@ -2823,14 +2932,20 @@ fun EditSongInfoSheet(
                             modifier = Modifier.bottomSheetScrollGuard(),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            items(searchState.searchResults) { songResult ->
+                            items(
+                                items = searchState.searchResults,
+                                key = { songResult ->
+                                    "${songResult.source.name}:${songResult.id}"
+                                },
+                                contentType = { "search_result" }
+                            ) { songResult ->
                                 androidx.compose.material3.Card(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(18.dp),
                                     colors = androidx.compose.material3.CardDefaults.cardColors(
                                         containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)
                                     ),
-                                    border = androidx.compose.foundation.BorderStroke(
+                                    border = BorderStroke(
                                         width = 1.dp,
                                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f)
                                     )
@@ -2871,6 +2986,151 @@ fun EditSongInfoSheet(
             }
         }
     }
+}
+
+@Composable
+private fun NowPlayingProgressSection(
+    songKey: String?,
+    durationMs: Long,
+    isPlaying: Boolean,
+    progressInfoSegments: List<NowPlayingProgressInfoSegment>,
+    useWideLandscapeLayout: Boolean,
+    onPreviewPositionChange: (Long?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val currentPosition by PlayerManager.playbackPositionFlow.collectAsState()
+    val latestOnPreviewPositionChange by rememberUpdatedState(onPreviewPositionChange)
+    var isUserDraggingSlider by remember(songKey) { mutableStateOf(false) }
+    var sliderPosition by remember(songKey) {
+        mutableFloatStateOf(PlayerManager.playbackPositionFlow.value.toFloat())
+    }
+    var pendingSeekPreviewPositionMs by remember(songKey) { mutableStateOf<Long?>(null) }
+    val effectivePreviewPositionMs = resolveLyricPreviewTimeMs(
+        isDraggingSlider = isUserDraggingSlider,
+        sliderPreviewPositionMs = sliderPosition.toLong(),
+        pendingSeekPreviewPositionMs = pendingSeekPreviewPositionMs,
+        playbackPositionMs = currentPosition
+    )
+    val previewOverridePositionMs = remember(
+        effectivePreviewPositionMs,
+        isUserDraggingSlider,
+        pendingSeekPreviewPositionMs
+    ) {
+        if (isUserDraggingSlider || pendingSeekPreviewPositionMs != null) {
+            effectivePreviewPositionMs
+        } else {
+            null
+        }
+    }
+
+    LaunchedEffect(currentPosition, isUserDraggingSlider, pendingSeekPreviewPositionMs) {
+        if (!isUserDraggingSlider && pendingSeekPreviewPositionMs == null) {
+            sliderPosition = currentPosition.toFloat()
+        }
+        val pendingPreview = pendingSeekPreviewPositionMs
+        if (!isUserDraggingSlider && pendingPreview != null &&
+            shouldReleaseLyricSeekPreview(
+                playbackPositionMs = currentPosition,
+                pendingSeekPreviewPositionMs = pendingPreview
+            )
+        ) {
+            pendingSeekPreviewPositionMs = null
+        }
+    }
+    LaunchedEffect(previewOverridePositionMs) {
+        latestOnPreviewPositionChange(previewOverridePositionMs)
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            latestOnPreviewPositionChange(null)
+        }
+    }
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = formatDuration(effectivePreviewPositionMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            WaveformSlider(
+                modifier = Modifier.weight(1f),
+                value = if (durationMs > 0) {
+                    effectivePreviewPositionMs.toFloat() / durationMs
+                } else {
+                    0f
+                },
+                onValueChange = { newPercentage ->
+                    isUserDraggingSlider = true
+                    sliderPosition = newPercentage * durationMs
+                },
+                onValueChangeFinished = {
+                    val previewTarget = sliderPosition.toLong()
+                    pendingSeekPreviewPositionMs = previewTarget
+                    PlayerManager.seekTo(previewTarget)
+                    isUserDraggingSlider = false
+                },
+                isPlaying = isPlaying
+            )
+
+            Text(
+                text = formatDuration(durationMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (progressInfoSegments.isNotEmpty()) {
+            Spacer(Modifier.height(0.dp))
+            NowPlayingProgressInfoRow(
+                segments = progressInfoSegments,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .offset(y = if (useWideLandscapeLayout) (-5).dp else (-6).dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun NowPlayingLyricsPane(
+    lyrics: List<LyricEntry>,
+    previewPositionOverrideMs: Long?,
+    modifier: Modifier = Modifier,
+    textColor: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    translationFontSize: androidx.compose.ui.unit.TextUnit,
+    visualSpec: LyricVisualSpec,
+    lyricOffsetMs: Long,
+    lyricBlurEnabled: Boolean,
+    lyricBlurAmount: Float,
+    onLyricClick: (LyricEntry) -> Unit,
+    translatedLyrics: List<LyricEntry>? = null
+) {
+    val currentPosition by PlayerManager.playbackPositionFlow.collectAsState()
+    val effectivePositionMs = previewPositionOverrideMs ?: currentPosition
+    AppleMusicLyric(
+        lyrics = lyrics,
+        currentTimeMs = effectivePositionMs,
+        modifier = modifier,
+        textColor = textColor,
+        fontSize = fontSize,
+        translationFontSize = translationFontSize,
+        visualSpec = visualSpec,
+        lyricOffsetMs = lyricOffsetMs,
+        lyricBlurEnabled = lyricBlurEnabled,
+        lyricBlurAmount = lyricBlurAmount,
+        onLyricClick = onLyricClick,
+        translatedLyrics = translatedLyrics
+    )
 }
 
 @Composable
@@ -3083,7 +3343,7 @@ fun FillOptionsDialog(
     var fillArtist by remember { mutableStateOf(true) }
     var fillLyrics by remember { mutableStateOf(true) }
 
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.music_auto_fill_select)) },
         text = {
@@ -3095,7 +3355,7 @@ fun FillOptionsDialog(
                     colors = androidx.compose.material3.CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
                     ),
-                    border = androidx.compose.foundation.BorderStroke(
+                    border = BorderStroke(
                         width = 1.dp,
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                     )

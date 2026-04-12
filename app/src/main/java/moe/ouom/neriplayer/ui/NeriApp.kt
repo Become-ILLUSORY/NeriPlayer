@@ -25,8 +25,8 @@ package moe.ouom.neriplayer.ui
 
 import android.app.Activity
 import android.app.Application
-import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -79,9 +79,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -90,17 +91,20 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -109,7 +113,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import coil.Coil
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.size.Precision
 import com.google.gson.Gson
 import dev.chrisbanes.haze.HazeDefaults
 import dev.chrisbanes.haze.HazeState
@@ -118,34 +124,50 @@ import dev.chrisbanes.haze.haze
 import dev.chrisbanes.haze.hazeChild
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.core.api.bili.BiliClient
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
 import moe.ouom.neriplayer.core.player.AudioPlayerService
 import moe.ouom.neriplayer.core.player.AudioReactive
 import moe.ouom.neriplayer.core.player.PlayerManager
-import moe.ouom.neriplayer.data.settings.ThemeDefaults
-import moe.ouom.neriplayer.data.settings.ThemePreferenceSnapshot
+import moe.ouom.neriplayer.core.player.preloadRestoredStateSnapshot
+import moe.ouom.neriplayer.core.player.shouldSkipLocalPlaybackSyncServiceStart
+import moe.ouom.neriplayer.data.local.media.LocalSongSupport
+import moe.ouom.neriplayer.core.player.policy.PlaybackCommandSource
+import moe.ouom.neriplayer.core.player.policy.shouldSyncPlaybackServiceForLocalPlaybackCommand
 import moe.ouom.neriplayer.data.model.displayArtist
 import moe.ouom.neriplayer.data.model.displayCoverUrl
 import moe.ouom.neriplayer.data.model.displayName
 import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
+import moe.ouom.neriplayer.data.settings.PlaybackPreferenceSnapshot
+import moe.ouom.neriplayer.data.settings.ThemeDefaults
+import moe.ouom.neriplayer.data.settings.ThemePreferenceSnapshot
+import moe.ouom.neriplayer.data.settings.readPlaybackPreferenceSnapshot
+import moe.ouom.neriplayer.data.settings.readPlaybackPreferenceSnapshotCached
 import moe.ouom.neriplayer.navigation.Destinations
 import moe.ouom.neriplayer.ui.component.NeriBottomBar
 import moe.ouom.neriplayer.ui.component.NeriMiniPlayer
 import moe.ouom.neriplayer.ui.component.ThemeRevealOverlay
+import moe.ouom.neriplayer.ui.component.blockUnderlyingTouches
 import moe.ouom.neriplayer.ui.screen.DownloadManagerScreen
 import moe.ouom.neriplayer.ui.screen.DownloadProgressScreen
 import moe.ouom.neriplayer.ui.screen.NowPlayingScreen
+import moe.ouom.neriplayer.ui.screen.RecentScreen
 import moe.ouom.neriplayer.ui.screen.debug.BiliApiProbeScreen
-import moe.ouom.neriplayer.ui.screen.debug.DebugHomeScreen
-import moe.ouom.neriplayer.ui.screen.debug.LogListScreen
 import moe.ouom.neriplayer.ui.screen.debug.CrashLogListScreen
+import moe.ouom.neriplayer.ui.screen.debug.DebugCrashTestType
+import moe.ouom.neriplayer.ui.screen.debug.DebugHomeScreen
 import moe.ouom.neriplayer.ui.screen.debug.ListenTogetherDebugScreen
+import moe.ouom.neriplayer.ui.screen.debug.LogListScreen
 import moe.ouom.neriplayer.ui.screen.debug.NeteaseApiProbeScreen
 import moe.ouom.neriplayer.ui.screen.debug.SearchApiProbeScreen
 import moe.ouom.neriplayer.ui.screen.debug.YouTubeApiProbeScreen
@@ -162,27 +184,19 @@ import moe.ouom.neriplayer.ui.view.HyperBackground
 import moe.ouom.neriplayer.ui.viewmodel.debug.LogViewerScreen
 import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
 import moe.ouom.neriplayer.ui.viewmodel.playlist.SongItem
-import moe.ouom.neriplayer.ui.viewmodel.tab.NeteaseAlbum
+import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.BiliPlaylist
-import moe.ouom.neriplayer.ui.viewmodel.tab.NeteasePlaylist
-import moe.ouom.neriplayer.core.api.bili.BiliClient
-import moe.ouom.neriplayer.util.ExceptionHandler
-import moe.ouom.neriplayer.util.NPLogger
+import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 import moe.ouom.neriplayer.util.CoverArtColorCache
+import moe.ouom.neriplayer.util.ExceptionHandler
+import moe.ouom.neriplayer.util.NativeCrashHandler
+import moe.ouom.neriplayer.util.NPLogger
 import moe.ouom.neriplayer.util.adjustedAccentColorArgb
+import moe.ouom.neriplayer.util.isRemoteImageSource
 import moe.ouom.neriplayer.util.syncHapticFeedbackSetting
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
-import moe.ouom.neriplayer.ui.screen.RecentScreen
-import moe.ouom.neriplayer.R
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.view.drawToBitmap
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlin.coroutines.resume
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private fun resolveMainStartDestination(
     preferredRoute: String,
@@ -203,7 +217,74 @@ private fun SongItem?.resolveUiCoverSource(context: android.content.Context): St
     return this?.displayCoverUrl(context)
 }
 
-private const val THEME_REVEAL_SNAPSHOT_MAX_DIMENSION_PX = 1440
+private const val NOW_PLAYING_REMOTE_BLUR_IMAGE_SIZE_PX = 640
+private const val NOW_PLAYING_LOCAL_BLUR_IMAGE_SIZE_PX = 384
+
+private fun resolvedNowPlayingBlurImageSizePx(coverUrl: String?): Int {
+    return if (isRemoteImageSource(coverUrl)) {
+        NOW_PLAYING_REMOTE_BLUR_IMAGE_SIZE_PX
+    } else {
+        NOW_PLAYING_LOCAL_BLUR_IMAGE_SIZE_PX
+    }
+}
+
+private fun resolvedNowPlayingBlurStrength(coverUrl: String?, configuredBlurAmount: Float): Float {
+    return if (isRemoteImageSource(coverUrl)) {
+        configuredBlurAmount
+    } else {
+        configuredBlurAmount.coerceAtMost(64f)
+    }
+}
+
+private const val THEME_REVEAL_SNAPSHOT_MAX_DIMENSION_PX = 1080
+private const val THEME_REVEAL_STABLE_DRAW_PASSES = 1
+private val THEME_REVEAL_SNAPSHOT_CONFIG = Bitmap.Config.RGB_565
+private val ROOT_HAZE_BLUR_RADIUS = 24.dp
+
+internal data class ThemeRevealSnapshotDimensions(
+    val width: Int,
+    val height: Int
+)
+
+internal fun resolveThemeRevealSnapshotDimensions(
+    width: Int,
+    height: Int,
+    maxDimensionPx: Int = THEME_REVEAL_SNAPSHOT_MAX_DIMENSION_PX
+): ThemeRevealSnapshotDimensions {
+    val safeWidth = width.coerceAtLeast(1)
+    val safeHeight = height.coerceAtLeast(1)
+    val maxDimension = maxOf(safeWidth, safeHeight)
+    val downsampleRatio = (maxDimension.toFloat() / maxDimensionPx)
+        .coerceAtLeast(1f)
+    return ThemeRevealSnapshotDimensions(
+        width = (safeWidth / downsampleRatio).roundToInt().coerceAtLeast(1),
+        height = (safeHeight / downsampleRatio).roundToInt().coerceAtLeast(1)
+    )
+}
+
+private fun View.drawScaledThemeRevealBitmap(): Bitmap? {
+    if (width <= 0 || height <= 0) {
+        return null
+    }
+    val snapshotDimensions = resolveThemeRevealSnapshotDimensions(
+        width = width,
+        height = height
+    )
+    return runCatching {
+        createBitmap(
+            snapshotDimensions.width,
+            snapshotDimensions.height,
+            THEME_REVEAL_SNAPSHOT_CONFIG
+        ).also { bitmap ->
+            val canvas = Canvas(bitmap)
+            canvas.scale(
+                snapshotDimensions.width.toFloat() / width.toFloat(),
+                snapshotDimensions.height.toFloat() / height.toFloat()
+            )
+            draw(canvas)
+        }
+    }.getOrNull()
+}
 
 private suspend fun captureThemeRevealSnapshot(
     activity: Activity?,
@@ -217,16 +298,15 @@ private suspend fun captureThemeRevealSnapshot(
                 return@suspendCancellableCoroutine
             }
 
-            val maxDimension = maxOf(decorView.width, decorView.height).coerceAtLeast(1)
-            val downsampleRatio = (maxDimension.toFloat() / THEME_REVEAL_SNAPSHOT_MAX_DIMENSION_PX)
-                .coerceAtLeast(1f)
-            val snapshotWidth = (decorView.width / downsampleRatio)
-                .toInt()
-                .coerceAtLeast(1)
-            val snapshotHeight = (decorView.height / downsampleRatio)
-                .toInt()
-                .coerceAtLeast(1)
-            val bitmap = createBitmap(snapshotWidth, snapshotHeight, Bitmap.Config.ARGB_8888)
+            val snapshotDimensions = resolveThemeRevealSnapshotDimensions(
+                width = decorView.width,
+                height = decorView.height
+            )
+            val bitmap = createBitmap(
+                snapshotDimensions.width,
+                snapshotDimensions.height,
+                THEME_REVEAL_SNAPSHOT_CONFIG
+            )
 
             PixelCopy.request(
                 currentActivity.window,
@@ -246,7 +326,7 @@ private suspend fun captureThemeRevealFallbackSnapshot(view: View): ImageBitmap?
     return withContext(Dispatchers.Main.immediate) {
         runCatching {
             if (view.width > 0 && view.height > 0) {
-                view.drawToBitmap().asImageBitmap()
+                view.drawScaledThemeRevealBitmap()?.asImageBitmap()
             } else {
                 null
             }
@@ -296,9 +376,22 @@ private suspend fun awaitNextDraw(view: View) {
 }
 
 private suspend fun awaitStableDraw(view: View) {
-    repeat(2) {
+    repeat(THEME_REVEAL_STABLE_DRAW_PASSES) {
         awaitNextDraw(view)
     }
+}
+
+private const val COVER_SEED_WARMUP_DELAY_MS = 180L
+
+internal fun resolveCoverSeedWarmupDelayMillis(
+    showNowPlaying: Boolean,
+    dynamicColorEnabled: Boolean,
+    hasCachedSample: Boolean
+): Long {
+    if (!dynamicColorEnabled || showNowPlaying || hasCachedSample) {
+        return 0L
+    }
+    return COVER_SEED_WARMUP_DELAY_MS
 }
 
 /**
@@ -382,9 +475,46 @@ fun NeriApp(
     initialThemeSnapshot: ThemePreferenceSnapshot = ThemePreferenceSnapshot(),
     onIsDarkChanged: (Boolean) -> Unit = {}
 ) {
+    var appContentReady by rememberSaveable { mutableStateOf(false) }
+    val bootstrapIsDark = when {
+        initialThemeSnapshot.forceDark -> true
+        initialThemeSnapshot.followSystemDark -> isSystemInDarkTheme()
+        else -> false
+    }
+
+    LaunchedEffect(Unit) {
+        // 先交一个极轻的背景首帧，下一帧再挂整棵导航和状态订阅树
+        withFrameNanos { }
+        appContentReady = true
+    }
+
+    if (!appContentReady) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(if (bootstrapIsDark) Color(0xFF121212) else Color.White)
+        )
+        return
+    }
+
+    NeriAppContent(
+        initialThemeSnapshot = initialThemeSnapshot,
+        onIsDarkChanged = onIsDarkChanged
+    )
+}
+
+@Composable
+private fun NeriAppContent(
+    initialThemeSnapshot: ThemePreferenceSnapshot = ThemePreferenceSnapshot(),
+    onIsDarkChanged: (Boolean) -> Unit = {}
+) {
     val context = LocalContext.current
     val rootView = LocalView.current
     val repo = remember { AppContainer.settingsRepo }
+    val application = remember(context) { context.applicationContext as Application }
+    val startupPlaybackPreferences = remember(application) {
+        readPlaybackPreferenceSnapshotCached(application) ?: PlaybackPreferenceSnapshot()
+    }
     val coverArtImageLoader = remember(context) { Coil.imageLoader(context) }
 
     val storedFollowSystemDark by repo.followSystemDarkFlow.collectAsState(
@@ -402,6 +532,7 @@ fun NeriApp(
     val themeColorPalette by repo.themeColorPaletteFlow.collectAsState(initial = ThemeDefaults.PRESET_COLORS)
     val lyricBlurEnabled by repo.lyricBlurEnabledFlow.collectAsState(initial = true)
     val lyricBlurAmount by repo.lyricBlurAmountFlow.collectAsState(initial = 1.5f)
+    val advancedLyricsEnabled by repo.advancedLyricsEnabledFlow.collectAsState(initial = true)
     val advancedBlurEnabled by repo.advancedBlurEnabledFlow.collectAsState(initial = true)
     val advancedBlurAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val effectiveAdvancedBlurEnabled = advancedBlurAvailable && advancedBlurEnabled
@@ -421,6 +552,7 @@ fun NeriApp(
     val hapticFeedbackEnabled by repo.hapticFeedbackEnabledFlow.collectAsState(initial = true)
     val showCoverSourceBadge by repo.showCoverSourceBadgeFlow.collectAsState(initial = true)
     val nowPlayingToolbarDockEnabled by repo.nowPlayingToolbarDockEnabledFlow.collectAsState(initial = true)
+    val showNowPlayingTitle by repo.nowPlayingShowTitleFlow.collectAsState(initial = true)
     val showNowPlayingProgressQualitySwitch by repo.nowPlayingProgressShowQualitySwitchFlow.collectAsState(initial = true)
     val showNowPlayingProgressAudioCodec by repo.nowPlayingProgressShowAudioCodecFlow.collectAsState(initial = true)
     val showNowPlayingProgressAudioSpec by repo.nowPlayingProgressShowAudioSpecFlow.collectAsState(initial = true)
@@ -442,7 +574,9 @@ fun NeriApp(
     val keepPlaybackModeState by repo.keepPlaybackModeStateFlow.collectAsState(initial = true)
     val stopOnBluetoothDisconnect by repo.stopOnBluetoothDisconnectFlow.collectAsState(initial = true)
     val allowMixedPlayback by repo.allowMixedPlaybackFlow.collectAsState(initial = false)
-    val maxCacheSizeBytes by repo.maxCacheSizeBytesFlow.collectAsState(initial = 1024L * 1024 * 1024)
+    val maxCacheSizeBytes by repo.maxCacheSizeBytesFlow.collectAsState(
+        initial = startupPlaybackPreferences.maxCacheSizeBytes
+    )
     val homeUsageEntries by AppContainer.playlistUsageRepo.frequentPlaylistsFlow.collectAsState(initial = emptyList())
     var pendingFollowSystemDark by remember { mutableStateOf<Boolean?>(null) }
     var pendingForceDark by remember { mutableStateOf<Boolean?>(null) }
@@ -480,25 +614,116 @@ fun NeriApp(
     // 缓存当前封面的取色结果，避免开关动态取色时先闪到默认种子色
     var coverSeedHex by remember { mutableStateOf<String?>(null) }
     val currentSong by PlayerManager.currentSongFlow.collectAsState()
-    val displayCoverUrl = currentSong.resolveUiCoverSource(context)
+    val displayCoverUrl = remember(currentSong, context) {
+        currentSong.resolveUiCoverSource(context)
+    }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        val initialCacheSize = repo.maxCacheSizeBytesFlow.first()
-        PlayerManager.initialize(context.applicationContext as Application, initialCacheSize)
+    val scheduleAudioServiceStart: (String, Boolean) -> Unit = { source, forceForeground ->
+        scope.launch {
+            // 让 currentSong/mini player 先过一帧，避免和服务启动抢主线程
+            withFrameNanos { }
+            // 本地切歌时先让播放器和首帧稳定下来，再补系统媒体会话同步
+            if (source.startsWith("local_playback_command_")) {
+                delay(450L)
+            }
+            if (
+                shouldSkipLocalPlaybackSyncServiceStart(
+                    source = source,
+                    serviceReady = AudioPlayerService.isReadyForPassiveLocalPlaybackSync(),
+                    hasItems = PlayerManager.hasItems(),
+                    hasLocalCurrentSong = PlayerManager.currentSongFlow.value?.let {
+                        LocalSongSupport.isLocalSong(it, context)
+                    } == true
+                )
+            ) {
+                NPLogger.d(
+                    "NERI-App",
+                    "Skipping audio service sync because active playback service is already tracking source=$source"
+                )
+                return@launch
+            }
+            NPLogger.d("NERI-App", "Starting audio service: source=$source")
+            AudioPlayerService.startSyncService(
+                context,
+                source,
+                forceForeground = forceForeground
+            )
+        }
+    }
 
+    LaunchedEffect(application) {
+        val exactStartupPlaybackPreferences = withContext(Dispatchers.IO) {
+            readPlaybackPreferenceSnapshot(application)
+        }
+        val startupRestoreSnapshot = PlayerManager.preloadRestoredStateSnapshot(
+            app = application,
+            keepLastPlaybackProgressEnabled =
+                exactStartupPlaybackPreferences.keepLastPlaybackProgress,
+            keepPlaybackModeStateEnabled =
+                exactStartupPlaybackPreferences.keepPlaybackModeState
+        )
+        withFrameNanos { }
+        PlayerManager.initializePreloaded(
+            app = application,
+            startupPlaybackPreferences = exactStartupPlaybackPreferences,
+            restoredStateSnapshot = startupRestoreSnapshot
+        )
+        NPLogger.d("NERI-App", "PlayerManager.initialize called")
+        NPLogger.d(
+            "NERI-App",
+            "Player bootstrap state hasItems=${PlayerManager.hasItems()} transportActive=${PlayerManager.isTransportActive()} isPlaying=${PlayerManager.isPlayingFlow.value}"
+        )
+        val shouldBootstrapPlaybackService =
+            PlayerManager.hasItems() && PlayerManager.shouldBootstrapPlaybackServiceOnAppLaunch()
+        if (shouldBootstrapPlaybackService) {
+            NPLogger.d("NERI-App", "Starting audio service from app bootstrap")
+            scheduleAudioServiceStart("app_bootstrap", true)
+        } else {
+            NPLogger.d(
+                "NERI-App",
+                "Skip audio service bootstrap: hasItems=${PlayerManager.hasItems()} currentSong=${PlayerManager.currentSongFlow.value != null}"
+            )
+        }
 
-        // 跳过初始值，订阅之后的变更，每次切曲写入最近播放
-        var lastRecordedSongKey: String? = null
-        PlayerManager.currentSongFlow
-            .drop(1)
-            .filterNotNull()
-            .collect { song ->
-                val songKey = song.stableKey()
-                if (songKey == lastRecordedSongKey) {
+        launch {
+            PlayerManager.playbackCommandFlow.collect { command ->
+                if (command.source != PlaybackCommandSource.LOCAL) {
                     return@collect
                 }
-                lastRecordedSongKey = songKey
-                AppContainer.playHistoryRepo.record(song)
+                if (!shouldSyncPlaybackServiceForLocalPlaybackCommand(command.type)) {
+                    return@collect
+                }
+                if (!PlayerManager.hasItems()) {
+                    return@collect
+                }
+                // 恢复旧队列后点继续播放，也要像切新歌一样补一次系统媒体会话同步
+                scheduleAudioServiceStart(
+                    "local_playback_command_${command.type.lowercase()}",
+                    PlayerManager.shouldRunPlaybackServiceInForeground()
+                )
+            }
+        }
+
+        launch {
+            // 跳过初始值，订阅之后的变更，每次切曲写入最近播放
+            var lastRecordedSongKey: String? = null
+            PlayerManager.currentSongFlow
+                .drop(1)
+                .filterNotNull()
+                .collect { song ->
+                    val songKey = song.stableKey()
+                    if (songKey == lastRecordedSongKey) {
+                        return@collect
+                    }
+                    lastRecordedSongKey = songKey
+                    // 首次切歌时先让播放稳定下来，避免历史记录和同步调度挤占首帧
+                    delay(700L)
+                    if (PlayerManager.currentSongFlow.value?.stableKey() != songKey) {
+                        return@collect
+                    }
+                    AppContainer.playHistoryRepo.record(song)
+                }
             }
     }
 
@@ -522,51 +747,34 @@ fun NeriApp(
         }
     }
 
-    LaunchedEffect(displayCoverUrl, coverArtRefreshToken) {
-        if (displayCoverUrl.isNullOrBlank()) {
+    LaunchedEffect(displayCoverUrl, coverArtRefreshToken, showNowPlaying, dynamicColorEnabled) {
+        if (displayCoverUrl.isNullOrBlank() || !dynamicColorEnabled) {
             coverSeedHex = null
             return@LaunchedEffect
         }
-        coverSeedHex = CoverArtColorCache.peek(displayCoverUrl)?.seedHex
-        coverSeedHex = CoverArtColorCache.getOrLoad(context, displayCoverUrl)?.seedHex ?: coverSeedHex
-    }
+        val cachedSample = CoverArtColorCache.peek(displayCoverUrl)
+        coverSeedHex = cachedSample?.seedHex
 
-    LaunchedEffect(
-        displayCoverUrl,
-        nowPlayingCoverBlurBackgroundEnabled,
-        nowPlayingCoverBlurAmount,
-        effectiveAdvancedBlurEnabled
-    ) {
-        if (displayCoverUrl.isNullOrBlank()) return@LaunchedEffect
-
-        coverArtImageLoader.enqueue(
-            ImageRequest.Builder(context)
-                .data(displayCoverUrl)
-                .allowHardware(false)
-                .build()
-        )
-        CoverArtColorCache.preload(context, displayCoverUrl)
-
-        if (!effectiveAdvancedBlurEnabled || !nowPlayingCoverBlurBackgroundEnabled) {
-            return@LaunchedEffect
+        if (showNowPlaying && isRemoteImageSource(displayCoverUrl)) {
+            coverArtImageLoader.enqueue(
+                ImageRequest.Builder(context)
+                    .data(displayCoverUrl)
+                    .allowHardware(false)
+                    .size(256)
+                    .build()
+            )
         }
 
-        val blurStrength = nowPlayingCoverBlurAmount.coerceIn(0f, 500f)
-        coverArtImageLoader.enqueue(
-            ImageRequest.Builder(context)
-                .data(displayCoverUrl)
-                .allowHardware(false)
-                .memoryCacheKey("nowplaying-blur:$displayCoverUrl:$blurStrength")
-                .diskCacheKey("nowplaying-blur:$displayCoverUrl:$blurStrength")
-                .transformations(
-                    if (blurStrength > 0f) {
-                        listOf(BlurTransformation(context, blurStrength))
-                    } else {
-                        emptyList()
-                    }
-                )
-                .build()
+        val warmupDelayMillis = resolveCoverSeedWarmupDelayMillis(
+            showNowPlaying = showNowPlaying,
+            dynamicColorEnabled = dynamicColorEnabled,
+            hasCachedSample = cachedSample != null
         )
+        if (warmupDelayMillis > 0L) {
+            kotlinx.coroutines.delay(warmupDelayMillis)
+        }
+
+        coverSeedHex = CoverArtColorCache.preload(context, displayCoverUrl)?.seedHex ?: coverSeedHex
     }
 
     // 同步触感反馈设置
@@ -575,7 +783,6 @@ fun NeriApp(
     }
 
     val defaultDensity = LocalDensity.current
-    var miniPlayerHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
 
     val finalDensity = remember(defaultDensity, uiDensityScale) {
@@ -591,26 +798,6 @@ fun NeriApp(
         else -> false
     }
     val hazeState = remember { HazeState() }
-
-    LaunchedEffect(Unit) {
-        // 确保 PlayerManager 使用正确的缓存大小初始化
-        // 由于 initialize() 是幂等的，如果已经初始化过，这个调用不会改变设置
-        val cacheSize = repo.maxCacheSizeBytesFlow.first()
-        PlayerManager.initialize(context.applicationContext as Application, cacheSize)
-        NPLogger.d("NERI-App", "PlayerManager.initialize called")
-        NPLogger.d(
-            "NERI-App",
-            "Player bootstrap state hasItems=${PlayerManager.hasItems()} transportActive=${PlayerManager.isTransportActive()} isPlaying=${PlayerManager.isPlayingFlow.value}"
-        )
-        if (PlayerManager.hasItems() && PlayerManager.shouldRunPlaybackServiceInForeground()) {
-            NPLogger.d("NERI-App", "Starting audio service from app bootstrap")
-            AudioPlayerService.startSyncService(context, "app_bootstrap", forceForeground = true)
-        } else {
-            NPLogger.d("NERI-App", "Skip audio service bootstrap because transport is inactive")
-        }
-    }
-
-    val scope = rememberCoroutineScope()
     val preferredQuality by repo.audioQualityFlow.collectAsState(initial = "exhigh")
     val youtubePreferredQuality by repo.youtubeAudioQualityFlow.collectAsState(initial = "very_high")
     val biliPreferredQuality by repo.biliAudioQualityFlow.collectAsState(initial = "high")
@@ -710,27 +897,25 @@ fun NeriApp(
         showNowPlaying = true
         // 播放队列可能包含歌词等大字段，避免通过 Binder 传整份歌单导致崩溃
         PlayerManager.playPlaylist(songs, index)
-        NPLogger.d("NERI-App", "Starting audio service after playSongsAndOpenNowPlaying")
-        AudioPlayerService.startSyncService(
-            context,
+        scheduleAudioServiceStart(
             "play_songs_and_open_now_playing",
-            forceForeground = true
+            true
         )
     }
 
-    fun ensureAudioServiceStarted() {
+    fun ensureAudioServiceStarted(source: String = "ensure_audio_service_started") {
         NPLogger.d(
             "NERI-App",
             "ensureAudioServiceStarted hasItems=${PlayerManager.hasItems()} transportActive=${PlayerManager.isTransportActive()} isPlaying=${PlayerManager.isPlayingFlow.value}"
         )
-        AudioPlayerService.startSyncService(context, "ensure_audio_service_started")
+        scheduleAudioServiceStart(source, false)
     }
 
     fun playBiliAudioAndOpenNowPlaying(videos: List<BiliVideoItem>, index: Int) {
         showNowPlaying = true
         NPLogger.d("NERI-App", "Playing audio from Bili video: ${videos[index].title}")
         PlayerManager.playBiliVideoAsAudio(videos, index)
-        ensureAudioServiceStarted()
+        ensureAudioServiceStarted(source = "play_bili_audio_and_open_now_playing")
     }
 
     fun playBiliPartsAndOpenNowPlaying(
@@ -741,7 +926,7 @@ fun NeriApp(
         showNowPlaying = true
         NPLogger.d("NERI-App", "Playing parts from Bili video: ${videoInfo.title}")
         PlayerManager.playBiliVideoParts(videoInfo, index, coverUrl)
-        ensureAudioServiceStarted()
+        ensureAudioServiceStarted(source = "play_bili_parts_and_open_now_playing")
     }
 
     CompositionLocalProvider(LocalDensity provides finalDensity) {
@@ -827,23 +1012,12 @@ fun NeriApp(
 
                 val currentSong by PlayerManager.currentSongFlow.collectAsState()
                 val isMiniPlayerVisible = currentSong != null && !showNowPlaying
-                val isPlaying by PlayerManager.isPlayingFlow.collectAsState()
-                val measuredMiniPlayerHeightDp = if (miniPlayerHeightPx > 0) {
-                    with(finalDensity) { miniPlayerHeightPx.toDp() }
-                } else {
+                val isPlaybackControlPlaying by PlayerManager.playbackControlPlayingFlow.collectAsState()
+                val reservedMiniPlayerHeightDp = if (currentSong == null) {
                     0.dp
-                }
-                val reservedMiniPlayerHeightDp = when {
-                    currentSong == null -> 0.dp
-                    measuredMiniPlayerHeightDp > 0.dp -> measuredMiniPlayerHeightDp
-                    else -> 56.dp
-                }
-                val visibleMiniPlayerHeightDp = if (isMiniPlayerVisible) {
-                    measuredMiniPlayerHeightDp
                 } else {
-                    0.dp
+                    moe.ouom.neriplayer.ui.component.NeriMiniPlayerDefaults.Height
                 }
-                isMiniPlayerVisible && visibleMiniPlayerHeightDp > 0.dp
 
                 LaunchedEffect(currentRoute, showHomeTab, effectiveStartDestination) {
                     if (!showHomeTab && currentRoute == Destinations.Home.route) {
@@ -935,7 +1109,7 @@ fun NeriApp(
                                                 hazeState,
                                                 HazeStyle(
                                                     tint = MaterialTheme.colorScheme.onSurface.copy(.0f),
-                                                    blurRadius = 30.dp,
+                                                    blurRadius = ROOT_HAZE_BLUR_RADIUS,
                                                     noiseFactor = HazeDefaults.noiseFactor
                                                 )
                                             )
@@ -1003,7 +1177,7 @@ fun NeriApp(
                                     }
                                 ) { backStackEntry ->
                                     val playlistJson = backStackEntry.arguments?.getString("playlistJson")
-                                    val playlist = Gson().fromJson(playlistJson, NeteasePlaylist::class.java)
+                                    val playlist = Gson().fromJson(playlistJson, PlaylistSummary::class.java)
                                     NeteasePlaylistDetailScreen(
                                         playlist = playlist,
                                         onBack = { navController.popBackStack() },
@@ -1028,7 +1202,7 @@ fun NeriApp(
                                     }
                                 ) { backStackEntry ->
                                     val playlistJson = backStackEntry.arguments?.getString("playlistJson")
-                                    val album = Gson().fromJson(playlistJson, NeteaseAlbum::class.java)
+                                    val album = Gson().fromJson(playlistJson, AlbumSummary::class.java)
                                     NeteaseAlbumDetailScreen(
                                         album = album,
                                         onBack = { navController.popBackStack() },
@@ -1238,6 +1412,10 @@ fun NeriApp(
                                         onLyricBlurAmountChange = { amount ->
                                             scope.launch { repo.setLyricBlurAmount(amount) }
                                         },
+                                        advancedLyricsEnabled = advancedLyricsEnabled,
+                                        onAdvancedLyricsEnabledChange = { enabled ->
+                                            scope.launch { repo.setAdvancedLyricsEnabled(enabled) }
+                                        },
                                         advancedBlurEnabled = advancedBlurEnabled,
                                         onAdvancedBlurEnabledChange = { enabled ->
                                             scope.launch { repo.setAdvancedBlurEnabled(enabled) }
@@ -1321,6 +1499,10 @@ fun NeriApp(
                                         nowPlayingToolbarDockEnabled = nowPlayingToolbarDockEnabled,
                                         onNowPlayingToolbarDockEnabledChange = { enabled ->
                                             scope.launch { repo.setNowPlayingToolbarDockEnabled(enabled) }
+                                        },
+                                        showNowPlayingTitle = showNowPlayingTitle,
+                                        onShowNowPlayingTitleChange = { enabled ->
+                                            scope.launch { repo.setNowPlayingShowTitle(enabled) }
                                         },
                                         showNowPlayingProgressQualitySwitch = showNowPlayingProgressQualitySwitch,
                                         onShowNowPlayingProgressQualitySwitchChange = { enabled ->
@@ -1507,9 +1689,44 @@ fun NeriApp(
                                         onOpenSearchDebug = { navController.navigate(Destinations.DebugSearch.route) },
                                         onOpenLogs = { navController.navigate(Destinations.DebugLogsList.route) },
                                         onOpenCrashLogs = { navController.navigate(Destinations.DebugCrashLogsList.route) },
-                                        onTestExceptionHandler = {
-                                            ExceptionHandler.safeExecute("DebugTest") {
-                                                throw RuntimeException(context.getString(R.string.test_exception_message))
+                                        onTestExceptionHandler = { crashType ->
+                                            val crashMessage = context.getString(R.string.test_exception_message)
+                                            when (crashType) {
+                                                DebugCrashTestType.JvmHandled -> {
+                                                    ExceptionHandler.safeExecute("DebugTestHandled") {
+                                                        throw RuntimeException(crashMessage)
+                                                    }
+                                                }
+
+                                                DebugCrashTestType.JvmUncaughtMain -> {
+                                                    Handler(Looper.getMainLooper()).post {
+                                                        throw RuntimeException(crashMessage)
+                                                    }
+                                                }
+
+                                                DebugCrashTestType.JvmUncaughtWorker -> {
+                                                    Thread {
+                                                        throw RuntimeException(crashMessage)
+                                                    }.start()
+                                                }
+
+                                                DebugCrashTestType.NativeSigSegv -> {
+                                                    Handler(Looper.getMainLooper()).post {
+                                                        NativeCrashHandler.triggerTestCrash(
+                                                            context = context,
+                                                            crashType = NativeCrashHandler.TestCrashType.SigSegv
+                                                        )
+                                                    }
+                                                }
+
+                                                DebugCrashTestType.NativeSigAbrt -> {
+                                                    Handler(Looper.getMainLooper()).post {
+                                                        NativeCrashHandler.triggerTestCrash(
+                                                            context = context,
+                                                            crashType = NativeCrashHandler.TestCrashType.SigAbrt
+                                                        )
+                                                    }
+                                                }
                                             }
                                         },
                                         onHideDebugMode = {
@@ -1564,34 +1781,23 @@ fun NeriApp(
                                 visible = currentSong != null && !showNowPlaying,
                                 modifier = Modifier.align(Alignment.BottomStart),
                                 enter = slideInVertically(
-                                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
-                                    initialOffsetY = { it }
-                                ) + fadeIn(animationSpec = tween(durationMillis = 200)) + scaleIn(
-                                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
-                                    initialScale = 0.8f
-                                ),
+                                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                                    initialOffsetY = { it / 2 }
+                                ) + fadeIn(animationSpec = tween(durationMillis = 180)),
                                 exit = slideOutVertically(
-                                    animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
-                                    targetOffsetY = { it }
-                                ) + fadeOut(animationSpec = tween(durationMillis = 150)) + scaleOut(
-                                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                                    targetScale = 0.8f
-                                )
+                                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+                                    targetOffsetY = { it / 2 }
+                                ) + fadeOut(animationSpec = tween(durationMillis = 120))
                             ) {
                                 NeriMiniPlayer(
                                     title = currentSong?.displayName()
                                         ?: context.getString(R.string.nowplaying_no_playback),
                                     artist = currentSong?.displayArtist() ?: "",
-                                    coverUrl = currentSong.resolveUiCoverSource(context),
-                                    isPlaying = isPlaying,
+                                    coverUrl = displayCoverUrl,
+                                    isPlaying = isPlaybackControlPlaying,
                                     modifier = Modifier,
                                     onPlayPause = { PlayerManager.togglePlayPause() },
                                     onExpand = { showNowPlaying = true },
-                                    onHeightChanged = { heightInPixels ->
-                                        if (heightInPixels > 0) {
-                                            miniPlayerHeightPx = heightInPixels
-                                        }
-                                    },
                                     hazeState = hazeState,
                                     enableHaze = effectiveAdvancedBlurEnabled
                                 )
@@ -1612,7 +1818,7 @@ fun NeriApp(
                         targetOffsetY = { fullHeight -> fullHeight }
                     ) + fadeOut(animationSpec = tween(durationMillis = 150))
                 ) {
-                    val currentCoverUrl = currentSong.resolveUiCoverSource(context)
+                    val currentCoverUrl = displayCoverUrl
                     val activeCoverSeedHex = if (currentCoverUrl == null) null else coverSeedHex
                     val effectiveSeedHex = if (dynamicColorEnabled) {
                         activeCoverSeedHex ?: themeSeedColor
@@ -1632,24 +1838,42 @@ fun NeriApp(
 
                         val currentSongNP by PlayerManager.currentSongFlow.collectAsState()
                         val nowPlayingQueue by PlayerManager.currentQueueFlow.collectAsState()
-                        val nowPlayingCoverUrl = currentSongNP.resolveUiCoverSource(context)
+                        val nowPlayingCoverUrl = remember(currentSongNP, context) {
+                            currentSongNP.resolveUiCoverSource(context)
+                        }
 
-                        Box(Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .blockUnderlyingTouches()
+                        ) {
                             val coverBlurAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                             val hasCoverBlur =
                                 coverBlurAvailable &&
                                     nowPlayingCoverBlurBackgroundEnabled &&
                                     !nowPlayingCoverUrl.isNullOrBlank()
                             val blurStrength = nowPlayingCoverBlurAmount.coerceIn(0f, 500f)
+                            val effectiveBlurStrength = remember(nowPlayingCoverUrl, blurStrength) {
+                                resolvedNowPlayingBlurStrength(
+                                    coverUrl = nowPlayingCoverUrl,
+                                    configuredBlurAmount = blurStrength
+                                )
+                            }
+                            val blurImageSizePx = remember(nowPlayingCoverUrl) {
+                                resolvedNowPlayingBlurImageSizePx(nowPlayingCoverUrl)
+                            }
+                            val shouldPreloadCoverBlurNeighbors = remember(nowPlayingCoverUrl) {
+                                isRemoteImageSource(nowPlayingCoverUrl)
+                            }
                             val imageLoader = remember(context) { Coil.imageLoader(context) }
                             var stableCoverUrl by remember { mutableStateOf<String?>(null) }
                             var stableBlurStrength by remember { mutableStateOf<Float?>(null) }
                             var coverBlurLoadFailed by remember { mutableStateOf(false) }
-                            val coverBlurRequestKey = remember(nowPlayingCoverUrl, blurStrength) {
+                            val coverBlurRequestKey = remember(nowPlayingCoverUrl, effectiveBlurStrength) {
                                 if (nowPlayingCoverUrl.isNullOrBlank()) {
                                     null
                                 } else {
-                                    "nowplaying-blur:$nowPlayingCoverUrl:$blurStrength"
+                                    "nowplaying-blur:$nowPlayingCoverUrl:$effectiveBlurStrength"
                                 }
                             }
                             val latestCoverBlurRequestKey by rememberUpdatedState(coverBlurRequestKey)
@@ -1657,8 +1881,12 @@ fun NeriApp(
                                 val current = currentSongNP ?: return@remember -1
                                 nowPlayingQueue.indexOfFirst { it.sameIdentityAs(current) }
                             }
-                            val preloadCoverUrls = remember(nowPlayingQueue, currentQueueIndex) {
-                                if (currentQueueIndex == -1) {
+                            val preloadCoverUrls = remember(
+                                nowPlayingQueue,
+                                currentQueueIndex,
+                                shouldPreloadCoverBlurNeighbors
+                            ) {
+                                if (currentQueueIndex == -1 || !shouldPreloadCoverBlurNeighbors) {
                                     emptyList()
                                 } else {
                                     listOfNotNull(
@@ -1670,18 +1898,23 @@ fun NeriApp(
                                 }
                             }
 
-                            LaunchedEffect(hasCoverBlur, blurStrength, preloadCoverUrls) {
+                            LaunchedEffect(hasCoverBlur, effectiveBlurStrength, blurImageSizePx, preloadCoverUrls) {
                                 if (!hasCoverBlur || preloadCoverUrls.isEmpty()) return@LaunchedEffect
                                 preloadCoverUrls.forEach { url ->
                                     imageLoader.enqueue(
                                         ImageRequest.Builder(context)
                                             .data(url)
                                             .allowHardware(false)
-                                            .memoryCacheKey("nowplaying-blur:$url:$blurStrength")
-                                            .diskCacheKey("nowplaying-blur:$url:$blurStrength")
+                                            .bitmapConfig(Bitmap.Config.RGB_565)
+                                            .size(blurImageSizePx)
+                                            .precision(Precision.INEXACT)
+                                            .memoryCacheKey("nowplaying-blur:$url:$effectiveBlurStrength")
+                                            .diskCacheKey("nowplaying-blur:$url:$effectiveBlurStrength")
+                                            .memoryCachePolicy(CachePolicy.ENABLED)
+                                            .diskCachePolicy(CachePolicy.ENABLED)
                                             .transformations(
-                                                if (blurStrength > 0f) {
-                                                    listOf(BlurTransformation(context, blurStrength))
+                                                if (effectiveBlurStrength > 0f) {
+                                                    listOf(BlurTransformation(context, effectiveBlurStrength))
                                                 } else {
                                                     emptyList()
                                                 }
@@ -1691,7 +1924,7 @@ fun NeriApp(
                                 }
                             }
 
-                            LaunchedEffect(hasCoverBlur, nowPlayingCoverUrl, blurStrength) {
+                            LaunchedEffect(hasCoverBlur, nowPlayingCoverUrl, effectiveBlurStrength) {
                                 if (!hasCoverBlur) {
                                     stableCoverUrl = null
                                     stableBlurStrength = null
@@ -1724,12 +1957,18 @@ fun NeriApp(
                                 )
                                 val shouldShowStable =
                                     stableCoverUrl != null &&
-                                        (stableCoverUrl != nowPlayingCoverUrl || stableBlurStrength != blurStrength)
+                                        (
+                                            stableCoverUrl != nowPlayingCoverUrl ||
+                                                stableBlurStrength != effectiveBlurStrength
+                                            )
                                 if (shouldShowStable) {
                                     AsyncImage(
                                         model = ImageRequest.Builder(context)
                                             .data(stableCoverUrl)
                                             .allowHardware(false)
+                                            .bitmapConfig(Bitmap.Config.RGB_565)
+                                            .size(blurImageSizePx)
+                                            .precision(Precision.INEXACT)
                                             .memoryCacheKey("nowplaying-blur:$stableCoverUrl:$stableBlurStrength")
                                             .diskCacheKey("nowplaying-blur:$stableCoverUrl:$stableBlurStrength")
                                             .transformations(
@@ -1749,11 +1988,14 @@ fun NeriApp(
                                     model = ImageRequest.Builder(context)
                                         .data(nowPlayingCoverUrl)
                                         .allowHardware(false)
-                                        .memoryCacheKey("nowplaying-blur:$nowPlayingCoverUrl:$blurStrength")
-                                        .diskCacheKey("nowplaying-blur:$nowPlayingCoverUrl:$blurStrength")
+                                        .bitmapConfig(Bitmap.Config.RGB_565)
+                                        .size(blurImageSizePx)
+                                        .precision(Precision.INEXACT)
+                                        .memoryCacheKey("nowplaying-blur:$nowPlayingCoverUrl:$effectiveBlurStrength")
+                                        .diskCacheKey("nowplaying-blur:$nowPlayingCoverUrl:$effectiveBlurStrength")
                                         .transformations(
-                                            if (blurStrength > 0f) {
-                                                listOf(BlurTransformation(context, blurStrength))
+                                            if (effectiveBlurStrength > 0f) {
+                                                listOf(BlurTransformation(context, effectiveBlurStrength))
                                             } else {
                                                 emptyList()
                                             }
@@ -1765,7 +2007,7 @@ fun NeriApp(
                                     onSuccess = {
                                         if (latestCoverBlurRequestKey == coverBlurRequestKey) {
                                             stableCoverUrl = nowPlayingCoverUrl
-                                            stableBlurStrength = blurStrength
+                                            stableBlurStrength = effectiveBlurStrength
                                             coverBlurLoadFailed = false
                                         }
                                     },
@@ -1808,8 +2050,10 @@ fun NeriApp(
                                     onLyricFontScaleChange = { scale ->
                                         scope.launch { repo.setLyricFontScale(scale) }
                                     },
+                                    advancedLyricsEnabled = advancedLyricsEnabled,
                                     showCoverSourceBadge = showCoverSourceBadge,
-                                    showLyricTranslation = showLyricTranslation
+                                    showLyricTranslation = showLyricTranslation,
+                                    showNowPlayingTitle = showNowPlayingTitle
                                 )
                             }
                         }

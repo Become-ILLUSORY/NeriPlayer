@@ -32,6 +32,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -43,25 +44,39 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.data.auth.web.shouldAutoCompleteYouTubeWebLogin
 import moe.ouom.neriplayer.data.auth.youtube.applyYouTubeWebCookies
+import moe.ouom.neriplayer.data.auth.youtube.clearYouTubeWebCookies
 import moe.ouom.neriplayer.data.auth.youtube.collectYouTubeWebCookies
 import moe.ouom.neriplayer.data.auth.youtube.hasMeaningfulYouTubeAuthChange
 import moe.ouom.neriplayer.data.auth.youtube.mergeYouTubeAuthBundle
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthBundle
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthRepository
+import moe.ouom.neriplayer.data.auth.youtube.YouTubeBootstrapSessionState
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeCookieSupport
+import moe.ouom.neriplayer.data.auth.youtube.YouTubeWebLoginVerifier
 import moe.ouom.neriplayer.data.auth.youtube.YOUTUBE_MUSIC_ORIGIN
+import moe.ouom.neriplayer.data.auth.youtube.evaluateYouTubeAuthHealth
+import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthState
 import moe.ouom.neriplayer.data.platform.youtube.isTrustedYouTubeLoginHost
 import moe.ouom.neriplayer.data.platform.youtube.YouTubeReverseProxyRuntime
+import moe.ouom.neriplayer.util.DynamicProxySelector
 import moe.ouom.neriplayer.util.NPLogger
 import moe.ouom.neriplayer.util.isAllowedMainFrameRequest
 import moe.ouom.neriplayer.util.lockPortraitIfPhone
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
+import org.json.JSONTokener
 
 class YouTubeWebLoginActivity : ComponentActivity() {
 
@@ -69,12 +84,20 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         const val RESULT_COOKIE = "result_cookie_map_json"
         const val RESULT_AUTH_JSON = "result_youtube_auth_json"
 
-        private const val TARGET_URL = "$YOUTUBE_MUSIC_ORIGIN/"
+        private const val TARGET_URL =
+            "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F"
         private val AUTH_HOSTS = setOf(
             "music.youtube.com",
             "www.youtube.com",
             "youtube.com",
             "m.youtube.com"
+        )
+        private val WEB_STORAGE_ORIGINS = listOf(
+            "https://accounts.google.com",
+            "https://music.youtube.com",
+            "https://www.youtube.com",
+            "https://youtube.com",
+            "https://m.youtube.com"
         )
     }
 
@@ -85,11 +108,51 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         val userAgent: String = ""
     )
 
+    private data class ObservedPageSessionState(
+        val readyState: String = "",
+        val hasYtcfg: Boolean = false,
+        val loggedIn: Boolean = false,
+        val sessionIndex: String = "",
+        val delegatedSessionId: String = "",
+        val userSessionId: String = ""
+    ) {
+        fun hasLiveSessionSignal(): Boolean {
+            return loggedIn ||
+                delegatedSessionId.isNotBlank() ||
+                userSessionId.isNotBlank()
+        }
+    }
+
     private lateinit var webView: WebView
-    private val authRepo by lazy { YouTubeAuthRepository(this) }
+    private val authRepo by lazy { AppContainer.youtubeAuthRepo }
+    private var hasReturned = false
+    private val loginCompletionWatcher = WebLoginCompletionWatcher(::maybeReturnObservedAuth)
+    private val loginVerificationClient by lazy {
+        OkHttpClient.Builder()
+            .proxySelector(DynamicProxySelector)
+            .build()
+    }
+    private val loginVerifier by lazy {
+        YouTubeWebLoginVerifier(::executeLoginVerificationRequest)
+    }
 
     @Volatile
     private var capturedHeaders: CapturedRequestHeaders? = null
+
+    @Volatile
+    private var observedPageSessionState: ObservedPageSessionState = ObservedPageSessionState()
+
+    @Volatile
+    private var webViewUserAgent: String = ""
+
+    @Volatile
+    private var loginVerificationInFlight: Boolean = false
+
+    @Volatile
+    private var lastRejectedVerificationKey: String = ""
+
+    @Volatile
+    private var lastRejectedVerificationAtMs: Long = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -160,6 +223,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
                 builtInZoomControls = true
                 displayZoomControls = false
             }
+            webViewUserAgent = settings.userAgentString.orEmpty()
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             webChromeClient = WebChromeClient()
@@ -167,6 +231,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         }
 
         restorePersistedCookies()
+        loginCompletionWatcher.start()
 
         root.addView(webView)
         root.addView(appBar)
@@ -214,6 +279,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        loginCompletionWatcher.stop()
         persistObservedAuthIfNeeded()
         CookieManager.getInstance().flush()
         if (this::webView.isInitialized) {
@@ -240,26 +306,13 @@ class YouTubeWebLoginActivity : ComponentActivity() {
     private fun readAndReturnAuth() {
         try {
             CookieManager.getInstance().flush()
-            val bundle = buildObservedAuthBundle(savedAt = System.currentTimeMillis())
-
-            if (!YouTubeCookieSupport.isLoggedIn(bundle.cookies)) {
-                Snackbar.make(
-                    webView,
-                    getString(R.string.snackbar_cookie_empty),
-                    Snackbar.LENGTH_LONG
-                ).show()
-                return
+            capturePageSessionState { pageSessionState ->
+                attemptReturnObservedAuth(
+                    bundle = buildObservedAuthBundle(savedAt = System.currentTimeMillis()),
+                    pageSessionState = pageSessionState,
+                    showFailureSnack = true
+                )
             }
-
-            persistBundleIfChanged(bundle)
-            val cookieJson = JSONObject(bundle.cookies as Map<*, *>).toString()
-            setResult(
-                RESULT_OK,
-                Intent()
-                    .putExtra(RESULT_AUTH_JSON, bundle.toJson())
-                    .putExtra(RESULT_COOKIE, cookieJson)
-            )
-            finish()
         } catch (error: Throwable) {
             Snackbar.make(
                 webView,
@@ -272,20 +325,66 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         }
     }
 
+    private fun maybeReturnObservedAuth(): Boolean {
+        if (hasReturned) {
+            return true
+        }
+        CookieManager.getInstance().flush()
+        attemptReturnObservedAuth(
+            bundle = buildObservedAuthBundle(savedAt = System.currentTimeMillis()),
+            pageSessionState = observedPageSessionState,
+            showFailureSnack = false
+        )
+        return hasReturned
+    }
+
     private fun restorePersistedCookies() {
         val savedBundle = authRepo.getAuthOnce()
         val savedCookies = savedBundle.cookies.ifEmpty {
             YouTubeCookieSupport.parseCookieString(savedBundle.cookieHeader)
         }
-        if (savedCookies.isEmpty()) {
-            return
-        }
-
-        applyYouTubeWebCookies(
-            cookieManager = CookieManager.getInstance(),
-            cookies = savedCookies,
-            skipExisting = true
+        val cookieManager = CookieManager.getInstance()
+        val existingCookies = collectYouTubeWebCookies(
+            cookieManager = cookieManager,
+            urls = YouTubeCookieSupport.webCookieReadUrls
         )
+        val cookiesToReset = linkedMapOf<String, String>().apply {
+            putAll(existingCookies)
+            putAll(savedCookies)
+        }
+        val resetCookieKeys = YouTubeCookieSupport.collectWebLoginResetCookieKeys(
+            cookiesToReset
+        )
+        if (resetCookieKeys.isNotEmpty()) {
+            NPLogger.d(
+                "NERI-YouTubeLogin",
+                "Resetting Google and YouTube WebView cookies before sign-in: " +
+                    resetCookieKeys.joinToString()
+            )
+            clearYouTubeWebCookies(
+                cookieManager = cookieManager,
+                cookieKeys = resetCookieKeys,
+                urls = YouTubeCookieSupport.webCookieReadUrls
+            )
+        }
+        resetPersistedWebStorage()
+
+        // Google 登录页对历史 cookie 很敏感，这里只保留最小 consent 基线
+        applyYouTubeWebCookies(
+            cookieManager = cookieManager,
+            cookies = emptyMap(),
+            urls = YouTubeCookieSupport.webCookieReadUrls,
+            skipExisting = false,
+            includeConsentCookie = true
+        )
+    }
+
+    private fun resetPersistedWebStorage() {
+        val webStorage = WebStorage.getInstance()
+        WEB_STORAGE_ORIGINS.forEach(webStorage::deleteOrigin)
+        if (this::webView.isInitialized) {
+            webView.clearHistory()
+        }
     }
 
     private fun buildObservedAuthBundle(
@@ -296,10 +395,10 @@ class YouTubeWebLoginActivity : ComponentActivity() {
             base = authRepo.getAuthOnce(),
             observedCookies = collectYouTubeWebCookies(CookieManager.getInstance()),
             authorization = snapshot?.authorization.orEmpty(),
-            xGoogAuthUser = snapshot?.xGoogAuthUser.orEmpty(),
+            xGoogAuthUser = snapshot?.xGoogAuthUser.orEmpty()
+                .ifBlank { observedPageSessionState.sessionIndex },
             origin = snapshot?.origin.orEmpty().ifBlank { YOUTUBE_MUSIC_ORIGIN },
-            userAgent = snapshot?.userAgent.orEmpty()
-                .ifBlank { webView.settings.userAgentString.orEmpty() },
+            userAgent = snapshot?.userAgent.orEmpty().ifBlank { webViewUserAgent },
             savedAt = savedAt
         )
     }
@@ -308,8 +407,15 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         if (!this::webView.isInitialized) {
             return
         }
+        if (!observedPageSessionState.hasLiveSessionSignal()) {
+            return
+        }
         val bundle = buildObservedAuthBundle()
-        if (!YouTubeCookieSupport.isLoggedIn(bundle.cookies)) {
+        if (!shouldAutoCompleteYouTubeWebLogin(
+                currentAuth = bundle,
+                pageConfirmedSession = observedPageSessionState.hasLiveSessionSignal()
+            )
+        ) {
             return
         }
         persistBundleIfChanged(bundle)
@@ -319,6 +425,141 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         val existing = authRepo.getAuthOnce()
         if (hasMeaningfulYouTubeAuthChange(existing, bundle)) {
             authRepo.saveAuth(bundle)
+        }
+    }
+
+    private fun attemptReturnObservedAuth(
+        bundle: YouTubeAuthBundle,
+        pageSessionState: ObservedPageSessionState,
+        showFailureSnack: Boolean
+    ) {
+        if (hasReturned || loginVerificationInFlight) {
+            return
+        }
+
+        val health = evaluateYouTubeAuthHealth(bundle)
+        if (health.state == YouTubeAuthState.Missing || health.activeCookieKeys.isEmpty()) {
+            if (showFailureSnack) {
+                showCookieMissingSnack()
+            }
+            return
+        }
+
+        val verificationKey = buildVerificationKey(bundle, pageSessionState)
+        val now = System.currentTimeMillis()
+        if (
+            !showFailureSnack &&
+            verificationKey == lastRejectedVerificationKey &&
+            now - lastRejectedVerificationAtMs < 3_000L
+        ) {
+            return
+        }
+
+        loginVerificationInFlight = true
+        lifecycleScope.launch {
+            val verification = runCatching {
+                withContext(Dispatchers.IO) {
+                    loginVerifier.verifyBlocking(bundle)
+                }
+            }
+            loginVerificationInFlight = false
+            if (hasReturned) {
+                return@launch
+            }
+
+            val pageConfirmedSession = pageSessionState.hasLiveSessionSignal()
+            val verifiedSessionState = verification.getOrNull()
+            val verifiedLoggedIn = verifiedSessionState?.hasLiveSessionSignal() == true
+            if (!pageConfirmedSession && !verifiedLoggedIn) {
+                lastRejectedVerificationKey = verificationKey
+                lastRejectedVerificationAtMs = System.currentTimeMillis()
+                NPLogger.w(
+                    "NERI-YouTubeLogin",
+                    "Reject login completion pageConfirmed=$pageConfirmedSession verifiedLoggedIn=$verifiedLoggedIn authUser=${bundle.xGoogAuthUser}"
+                )
+                if (showFailureSnack) {
+                    showCookieMissingSnack()
+                }
+                return@launch
+            }
+
+            val completedBundle = bundle.copy(
+                xGoogAuthUser = bundle.xGoogAuthUser.ifBlank {
+                    verifiedSessionState?.sessionIndex.orEmpty()
+                }
+            ).normalized(savedAt = bundle.savedAt)
+            completeObservedAuth(
+                bundle = completedBundle,
+                verificationState = verifiedSessionState,
+                pageConfirmedSession = pageConfirmedSession
+            )
+        }
+    }
+
+    private fun completeObservedAuth(
+        bundle: YouTubeAuthBundle,
+        verificationState: YouTubeBootstrapSessionState?,
+        pageConfirmedSession: Boolean
+    ) {
+        if (hasReturned) {
+            return
+        }
+
+        lastRejectedVerificationKey = ""
+        lastRejectedVerificationAtMs = 0L
+        persistBundleIfChanged(bundle)
+        val cookieJson = JSONObject(bundle.cookies as Map<*, *>).toString()
+        hasReturned = true
+        setResult(
+            RESULT_OK,
+            Intent()
+                .putExtra(RESULT_AUTH_JSON, bundle.toJson())
+                .putExtra(RESULT_COOKIE, cookieJson)
+        )
+        NPLogger.d(
+            "NERI-YouTubeLogin",
+            "Login OK, pageConfirmed=$pageConfirmedSession verifiedLoggedIn=${verificationState?.loggedIn == true} cookie keys=${bundle.cookies.keys} authUser=${bundle.xGoogAuthUser}"
+        )
+        finish()
+    }
+
+    private fun showCookieMissingSnack() {
+        Snackbar.make(
+            webView,
+            getString(R.string.settings_youtube_auth_missing),
+            Snackbar.LENGTH_LONG
+        ).show()
+    }
+
+    private fun executeLoginVerificationRequest(request: Request): String {
+        loginVerificationClient.newCall(request).execute().use { response ->
+            val body = response.body.string()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("YouTube verification failed: ${response.code}")
+            }
+            return body
+        }
+    }
+
+    private fun buildVerificationKey(
+        bundle: YouTubeAuthBundle,
+        pageSessionState: ObservedPageSessionState
+    ): String {
+        val normalizedBundle = bundle.normalized(savedAt = 0L)
+        return buildString {
+            append(normalizedBundle.cookieHeader)
+            append('|')
+            append(normalizedBundle.authorization)
+            append('|')
+            append(normalizedBundle.xGoogAuthUser)
+            append('|')
+            append(pageSessionState.loggedIn)
+            append('|')
+            append(pageSessionState.sessionIndex)
+            append('|')
+            append(pageSessionState.delegatedSessionId)
+            append('|')
+            append(pageSessionState.userSessionId)
         }
     }
 
@@ -337,13 +578,10 @@ class YouTubeWebLoginActivity : ComponentActivity() {
             .ifBlank { findHeader(headers, "Origin") }
             .ifBlank { YOUTUBE_MUSIC_ORIGIN }
         val userAgent = findHeader(headers, "User-Agent")
-            .ifBlank { webView.settings.userAgentString.orEmpty() }
+            .ifBlank { webViewUserAgent }
 
         val path = currentRequest.url.encodedPath.orEmpty()
-        val hasUsefulCookie = cookieHeader.contains("SAPISID=") ||
-            cookieHeader.contains("__Secure-1PAPISID=") ||
-            cookieHeader.contains("__Secure-3PAPISID=") ||
-            cookieHeader.contains("LOGIN_INFO=")
+        val hasUsefulCookie = YouTubeCookieSupport.hasUsefulRequestCookies(cookieHeader)
         val isYouTubeiRequest = path.startsWith("/youtubei/v1/")
         if (!isYouTubeiRequest && authorization.isBlank() && !hasUsefulCookie) {
             return false
@@ -364,6 +602,82 @@ class YouTubeWebLoginActivity : ComponentActivity() {
             .orEmpty()
     }
 
+    private fun capturePageSessionState(
+        onCaptured: ((ObservedPageSessionState) -> Unit)? = null
+    ) {
+        if (!this::webView.isInitialized) {
+            onCaptured?.invoke(observedPageSessionState)
+            return
+        }
+        webView.evaluateJavascript(
+            """
+                (() => {
+                  const topWindow = window.top;
+                  const ytcfg = topWindow?.ytcfg;
+                  const getConfig = (key) => {
+                    try {
+                      if (ytcfg?.get) {
+                        return ytcfg.get(key);
+                      }
+                      return ytcfg?.data_?.[key];
+                    } catch (error) {
+                      return null;
+                    }
+                  };
+                  return JSON.stringify({
+                    readyState: document.readyState || '',
+                    hasYtcfg: !!ytcfg,
+                    loggedIn: !!getConfig('LOGGED_IN'),
+                    sessionIndex: String(getConfig('SESSION_INDEX') || ''),
+                    delegatedSessionId: String(getConfig('DELEGATED_SESSION_ID') || ''),
+                    userSessionId: String(getConfig('USER_SESSION_ID') || '')
+                  });
+                })()
+            """.trimIndent()
+        ) { raw ->
+            val state = parseObservedPageSessionState(raw) ?: ObservedPageSessionState()
+            val previousHadLiveSession = observedPageSessionState.hasLiveSessionSignal()
+            observedPageSessionState = state
+            if (!previousHadLiveSession && state.hasLiveSessionSignal()) {
+                NPLogger.d(
+                    "NERI-YouTubeLogin",
+                    "Confirmed live page session loggedIn=${state.loggedIn} hasYtcfg=${state.hasYtcfg}"
+                )
+                persistObservedAuthIfNeeded()
+                loginCompletionWatcher.scheduleCheck(delayMs = 0L)
+            }
+            onCaptured?.invoke(state)
+        }
+    }
+
+    private fun parseObservedPageSessionState(raw: String?): ObservedPageSessionState? {
+        val decoded = decodeEvaluateJavascriptValue(raw) ?: return null
+        return runCatching {
+            val root = JSONObject(decoded)
+            ObservedPageSessionState(
+                readyState = root.optString("readyState"),
+                hasYtcfg = root.optBoolean("hasYtcfg"),
+                loggedIn = root.optBoolean("loggedIn"),
+                sessionIndex = root.optString("sessionIndex"),
+                delegatedSessionId = root.optString("delegatedSessionId"),
+                userSessionId = root.optString("userSessionId")
+            )
+        }.getOrNull()
+    }
+
+    private fun decodeEvaluateJavascriptValue(raw: String?): String? {
+        val value = raw?.trim().orEmpty()
+        if (value.isBlank() || value == "null") {
+            return null
+        }
+        return runCatching {
+            when (val parsed = JSONTokener(value).nextValue()) {
+                is String -> parsed
+                else -> parsed.toString()
+            }
+        }.getOrNull()
+    }
+
     private inner class InnerClient : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val currentRequest = request ?: return false
@@ -372,6 +686,11 @@ class YouTubeWebLoginActivity : ComponentActivity() {
                 NPLogger.w("NERI-YouTubeLogin", "Blocked unexpected navigation: $uri")
                 return true
             }
+            if (currentRequest.isForMainFrame) {
+                capturedHeaders = null
+                observedPageSessionState = ObservedPageSessionState()
+                loginCompletionWatcher.scheduleCheck()
+            }
             return false
         }
 
@@ -379,15 +698,29 @@ class YouTubeWebLoginActivity : ComponentActivity() {
             view: WebView?,
             request: WebResourceRequest?
         ): WebResourceResponse? {
-            if (captureAuthHeaders(request)) {
-                view?.post { persistObservedAuthIfNeeded() }
+            val captured = captureAuthHeaders(request)
+            view?.post {
+                if (captured) {
+                    persistObservedAuthIfNeeded()
+                    capturePageSessionState()
+                }
+                loginCompletionWatcher.scheduleCheck()
             }
             return super.shouldInterceptRequest(view, request)
         }
 
+        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+            capturedHeaders = null
+            observedPageSessionState = ObservedPageSessionState()
+            super.onPageStarted(view, url, favicon)
+            loginCompletionWatcher.scheduleCheck()
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
             CookieManager.getInstance().flush()
+            capturePageSessionState()
             persistObservedAuthIfNeeded()
+            loginCompletionWatcher.scheduleCheck()
             super.onPageFinished(view, url)
         }
     }

@@ -32,15 +32,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.data.auth.common.parseRawCookieText
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthBundle
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthHealth
+import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthState
 import moe.ouom.neriplayer.data.auth.youtube.evaluateYouTubeAuthHealth
 
 data class YouTubeAuthUiState(
-    val health: YouTubeAuthHealth = evaluateYouTubeAuthHealth(YouTubeAuthBundle())
+    val health: YouTubeAuthHealth = evaluateYouTubeAuthHealth(YouTubeAuthBundle()),
+    val hasSavedAuth: Boolean = false
 )
 
 sealed interface YouTubeAuthEvent {
@@ -54,7 +58,8 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _uiState = MutableStateFlow(
         YouTubeAuthUiState(
-            health = repo.getAuthHealth()
+            health = repo.getAuthHealth(),
+            hasSavedAuth = repo.getAuthOnce().hasPersistedAuth()
         )
     )
     val uiState: StateFlow<YouTubeAuthUiState>
@@ -65,7 +70,16 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             repo.authHealthFlow.collect { health ->
-                _uiState.value = YouTubeAuthUiState(health = health)
+                _uiState.update { current ->
+                    current.copy(health = health)
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.authFlow.collect { bundle ->
+                _uiState.update { current ->
+                    current.copy(hasSavedAuth = bundle.hasPersistedAuth())
+                }
             }
         }
     }
@@ -74,7 +88,20 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             repo.refreshHealth()
             val health = repo.getAuthHealthOnce()
-            _uiState.value = YouTubeAuthUiState(health = health)
+            _uiState.update { current ->
+                current.copy(health = health)
+            }
+        }
+    }
+
+    fun clearAuth() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.clear()
+            _events.send(
+                YouTubeAuthEvent.ShowSnack(
+                    getApplication<Application>().getString(R.string.auth_cookie_cleared)
+                )
+            )
         }
     }
 
@@ -88,7 +115,7 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        val parsed = parseCookieString(raw)
+        val parsed = parseRawCookieText(raw)
         if (parsed.isEmpty()) {
             emitSnack(getApplication<Application>().getString(R.string.auth_cookie_invalid))
             return
@@ -108,7 +135,8 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
             val normalized = bundle.normalized(
                 savedAt = bundle.savedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
             )
-            if (!normalized.isUsable()) {
+            val health = evaluateYouTubeAuthHealth(normalized)
+            if (health.state == YouTubeAuthState.Missing) {
                 _events.send(
                     YouTubeAuthEvent.ShowSnack(
                         getApplication<Application>().getString(R.string.settings_youtube_auth_missing)
@@ -118,10 +146,13 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             repo.saveAuth(normalized)
-            _uiState.value = YouTubeAuthUiState(health = repo.getAuthHealthOnce())
+            _uiState.value = YouTubeAuthUiState(
+                health = repo.getAuthHealthOnce(),
+                hasSavedAuth = true
+            )
             _events.send(
                 YouTubeAuthEvent.ShowCookies(
-                    normalized.cookies.ifEmpty { parseCookieString(normalized.cookieHeader) }
+                    normalized.cookies.ifEmpty { parseRawCookieText(normalized.cookieHeader) }
                 )
             )
             _events.send(
@@ -139,23 +170,7 @@ class YouTubeAuthViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-
-    private fun parseCookieString(raw: String): LinkedHashMap<String, String> {
-        val result = linkedMapOf<String, String>()
-        raw.split(';')
-            .map(String::trim)
-            .filter { it.isNotBlank() && it.contains('=') }
-            .forEach { segment ->
-                val delimiterIndex = segment.indexOf('=')
-                if (delimiterIndex <= 0) {
-                    return@forEach
-                }
-                val key = segment.substring(0, delimiterIndex).trim()
-                val value = segment.substring(delimiterIndex + 1).trim()
-                if (key.isNotEmpty()) {
-                    result[key] = value
-                }
-        }
-        return result
+    private fun YouTubeAuthBundle.hasPersistedAuth(): Boolean {
+        return evaluateYouTubeAuthHealth(this).state != YouTubeAuthState.Missing
     }
 }

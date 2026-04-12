@@ -47,9 +47,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.core.download.countPendingDownloadTasks
+import moe.ouom.neriplayer.core.download.countQueuedDownloadTasks
 import moe.ouom.neriplayer.core.download.DownloadStatus
 import moe.ouom.neriplayer.core.download.DownloadTask
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
+import moe.ouom.neriplayer.core.download.isDownloadTaskCancellable
+import moe.ouom.neriplayer.core.player.AudioDownloadManager
 import moe.ouom.neriplayer.data.model.displayArtist
 import moe.ouom.neriplayer.data.model.displayName
 import moe.ouom.neriplayer.data.model.stableKey
@@ -64,7 +68,13 @@ fun DownloadProgressScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val batchDownloadProgress by AudioDownloadManager.batchProgressFlow.collectAsState()
     val downloadTasks by GlobalDownloadManager.downloadTasks.collectAsState()
+    val pendingTaskCount = remember(downloadTasks) { countPendingDownloadTasks(downloadTasks) }
+    val queuedTaskCount = remember(downloadTasks) { countQueuedDownloadTasks(downloadTasks) }
+    val visibleTasks = remember(downloadTasks) {
+        downloadTasks.filter { it.status != DownloadStatus.QUEUED }
+    }
     val miniPlayerHeight = LocalMiniPlayerHeight.current
     var showClearDialog by remember { mutableStateOf(false) }
 
@@ -106,11 +116,19 @@ fun DownloadProgressScreen(
                         style = MaterialTheme.typography.titleLarge
                     )
                     Text(
-                pluralStringResource(
-                    R.plurals.download_tasks_count,
-                    downloadTasks.size,
-                    downloadTasks.size
-                ),
+                        text = if (batchDownloadProgress != null) {
+                            stringResource(
+                                R.string.download_progress_format,
+                                batchDownloadProgress!!.completedSongs,
+                                batchDownloadProgress!!.totalSongs
+                            )
+                        } else {
+                            pluralStringResource(
+                                R.plurals.download_tasks_count,
+                                pendingTaskCount,
+                                pendingTaskCount
+                            )
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -137,7 +155,7 @@ fun DownloadProgressScreen(
             }
         )
 
-        if (downloadTasks.isEmpty()) {
+        if (visibleTasks.isEmpty() && queuedTaskCount == 0) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -171,7 +189,46 @@ fun DownloadProgressScreen(
                     bottom = 16.dp + miniPlayerHeight
                 )
             ) {
-                items(downloadTasks, key = { it.song.stableKey() }) { task ->
+                if (queuedTaskCount > 0) {
+                    item(key = "queued-summary") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = pluralStringResource(
+                                        R.plurals.download_tasks_count,
+                                        queuedTaskCount,
+                                        queuedTaskCount
+                                    ),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = stringResource(R.string.download_waiting_queue_summary),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                items(
+                    items = visibleTasks,
+                    key = { it.song.stableKey() },
+                    contentType = { task -> task.status }
+                ) { task ->
                     val songKey = task.song.stableKey()
                     val canDismiss = task.status == DownloadStatus.COMPLETED || task.status == DownloadStatus.CANCELLED
 
@@ -219,11 +276,7 @@ fun DownloadProgressScreen(
                                 context.performHapticFeedback()
                                 GlobalDownloadManager.resumeDownloadTask(context, songKey)
                             },
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(durationMillis = 250),
-                                fadeOutSpec = tween(durationMillis = 250),
-                                placementSpec = tween(durationMillis = 250)
-                            )
+                            modifier = Modifier
                         )
                     }
                 }
@@ -239,6 +292,8 @@ private fun DownloadTaskItem(
     modifier: Modifier = Modifier,
     onResume: () -> Unit = {}
 ) {
+    val songName = remember(task.song) { task.song.displayName() }
+    val songArtist = remember(task.song) { task.song.displayArtist() }
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -256,39 +311,22 @@ private fun DownloadTaskItem(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 状态图标
-                Icon(
-                    when (task.status) {
-                        DownloadStatus.DOWNLOADING -> Icons.Default.CloudDownload
-                        DownloadStatus.COMPLETED -> Icons.Default.CheckCircle
-                        DownloadStatus.FAILED -> Icons.Default.Error
-                        DownloadStatus.CANCELLED -> Icons.Default.Cancel
-                    },
-                    contentDescription = null,
-                    tint = when (task.status) {
-                        DownloadStatus.DOWNLOADING -> MaterialTheme.colorScheme.primary
-                        DownloadStatus.COMPLETED -> Color(0xFF4CAF50)
-                        DownloadStatus.FAILED -> MaterialTheme.colorScheme.error
-                        DownloadStatus.CANCELLED -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier.size(24.dp)
-                )
+                DownloadTaskStatusIcon(task.status)
 
                 Spacer(modifier = Modifier.width(12.dp))
 
-                // 歌曲信息
                 Column(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = task.song.displayName(),
+                        text = songName,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = task.song.displayArtist(),
+                        text = songArtist,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -296,98 +334,188 @@ private fun DownloadTaskItem(
                     )
                 }
 
-                // 取消/恢复按钮
-                when (task.status) {
-                    DownloadStatus.DOWNLOADING -> {
-                        IconButton(onClick = onCancel) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = stringResource(R.string.download_cancel_download),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-                    DownloadStatus.CANCELLED -> {
-                        IconButton(onClick = onResume) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = stringResource(R.string.download_to_local),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    else -> {}
-                }
+                DownloadTaskActionButton(
+                    task = task,
+                    onCancel = onCancel,
+                    onResume = onResume
+                )
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 进度条和信息
-            when (task.status) {
-                DownloadStatus.DOWNLOADING -> {
-                    task.progress?.let { progress ->
-                        Column {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "${progress.percentage}%",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "${formatFileSize(progress.bytesRead)} / ${formatFileSize(progress.totalBytes)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            LinearProgressIndicator(
-                                progress = { progress.bytesRead.toFloat() / progress.totalBytes.toFloat() },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .clip(RoundedCornerShape(2.dp)),
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "${formatFileSize(progress.speedBytesPerSec)}/s",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    } ?: run {
-                        LinearProgressIndicator(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                        )
-                    }
-                }
-                DownloadStatus.COMPLETED -> {
-                    Text(
-                        text = stringResource(R.string.download_completed),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF4CAF50)
-                    )
-                }
-                DownloadStatus.FAILED -> {
-                    Text(
-                        text = stringResource(R.string.download_failed),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                DownloadStatus.CANCELLED -> {
-                    Text(
-                        text = stringResource(R.string.download_cancelled_status),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            DownloadTaskProgressSection(task = task)
         }
     }
+}
+
+@Composable
+private fun DownloadTaskStatusIcon(status: DownloadStatus) {
+    Icon(
+        imageVector = when (status) {
+            DownloadStatus.QUEUED -> Icons.Default.Schedule
+            DownloadStatus.DOWNLOADING -> Icons.Default.CloudDownload
+            DownloadStatus.COMPLETED -> Icons.Default.CheckCircle
+            DownloadStatus.FAILED -> Icons.Default.Error
+            DownloadStatus.CANCELLED -> Icons.Default.Cancel
+        },
+        contentDescription = null,
+        tint = when (status) {
+            DownloadStatus.QUEUED -> MaterialTheme.colorScheme.onSurfaceVariant
+            DownloadStatus.DOWNLOADING -> MaterialTheme.colorScheme.primary
+            DownloadStatus.COMPLETED -> Color(0xFF4CAF50)
+            DownloadStatus.FAILED -> MaterialTheme.colorScheme.error
+            DownloadStatus.CANCELLED -> MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = Modifier.size(24.dp)
+    )
+}
+
+@Composable
+private fun DownloadTaskActionButton(
+    task: DownloadTask,
+    onCancel: () -> Unit,
+    onResume: () -> Unit
+) {
+    when (task.status) {
+        DownloadStatus.QUEUED,
+        DownloadStatus.DOWNLOADING -> {
+            val cancellable = isDownloadTaskCancellable(task)
+            IconButton(onClick = onCancel, enabled = cancellable) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(
+                        if (cancellable) R.string.download_cancel_download else R.string.download_finalizing
+                    ),
+                    tint = if (cancellable) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+        }
+
+        DownloadStatus.CANCELLED -> {
+            IconButton(onClick = onResume) {
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = stringResource(R.string.download_to_local),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        else -> Unit
+    }
+}
+
+@Composable
+private fun DownloadTaskProgressSection(task: DownloadTask) {
+    when (task.status) {
+        DownloadStatus.QUEUED -> {
+            Text(
+                text = stringResource(R.string.download_queued_status),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        DownloadStatus.DOWNLOADING -> {
+            val progress = task.progress
+            if (progress == null) {
+                DownloadTaskIndeterminateProgress()
+                return
+            }
+            if (progress.stage == AudioDownloadManager.DownloadStage.FINALIZING) {
+                Text(
+                    text = stringResource(R.string.download_finalizing),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                DownloadTaskIndeterminateProgress()
+                return
+            }
+            if (progress.totalBytes <= 0L) {
+                DownloadTaskIndeterminateProgress()
+                return
+            }
+
+            val progressFraction = remember(progress.bytesRead, progress.totalBytes) {
+                (progress.bytesRead.toFloat() / progress.totalBytes.toFloat())
+                    .coerceIn(0f, 1f)
+            }
+            val progressText = remember(progress.percentage) { "${progress.percentage}%" }
+            val sizeText = remember(progress.bytesRead, progress.totalBytes) {
+                "${formatFileSize(progress.bytesRead)} / ${formatFileSize(progress.totalBytes)}"
+            }
+            val speedText = remember(progress.speedBytesPerSec) {
+                "${formatFileSize(progress.speedBytesPerSec)}/s"
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = progressText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = sizeText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { progressFraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = speedText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        DownloadStatus.COMPLETED -> {
+            Text(
+                text = stringResource(R.string.download_completed),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF4CAF50)
+            )
+        }
+
+        DownloadStatus.FAILED -> {
+            Text(
+                text = stringResource(R.string.download_failed),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        DownloadStatus.CANCELLED -> {
+            Text(
+                text = stringResource(R.string.download_cancelled_status),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun DownloadTaskIndeterminateProgress() {
+    LinearProgressIndicator(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(4.dp)
+            .clip(RoundedCornerShape(2.dp))
+    )
 }

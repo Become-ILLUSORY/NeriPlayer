@@ -34,7 +34,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -54,22 +53,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.activity.BiliWebLoginActivity
 import moe.ouom.neriplayer.activity.YouTubeWebLoginActivity
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
-import moe.ouom.neriplayer.data.auth.bili.BILI_AUTH_STALE_AFTER_MS
 import moe.ouom.neriplayer.ui.component.bottomSheetDragBlocker
 import moe.ouom.neriplayer.ui.screen.tab.settings.component.InlineMessage
 import moe.ouom.neriplayer.ui.viewmodel.auth.BiliAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.YouTubeAuthViewModel
 import moe.ouom.neriplayer.util.HapticButton
 import moe.ouom.neriplayer.util.HapticTextButton
-import moe.ouom.neriplayer.util.convertTimestampToDate
 
 @Composable
 internal fun SettingsBiliAuthDialogs(
@@ -82,23 +76,52 @@ internal fun SettingsBiliAuthDialogs(
     showCookieDialog: Boolean,
     cookieText: String,
     onDismissCookieDialog: () -> Unit,
-    showReauthDialog: Boolean,
-    reauthHealth: SavedCookieAuthHealth?,
-    onDismissReauthDialog: () -> Unit,
-    onOpenSheetAtTab: (Int) -> Unit
+    showSavedCookieDialog: Boolean = false,
+    onDismissSavedCookieDialog: () -> Unit = {},
+    onOpenSheetAtTab: (Int) -> Unit = {},
+    onLogout: (() -> Unit)? = null,
+    onBrowserLogin: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
 
-    if (showSheet) {
-        val webLoginLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            if (result.resultCode == android.app.Activity.RESULT_OK) {
-                val json = result.data?.getStringExtra(BiliWebLoginActivity.RESULT_COOKIE) ?: "{}"
-                vm.importCookiesFromMap(vm.parseJsonToMap(json))
-            } else {
-                onInlineMsgChange(context.getString(R.string.settings_cookie_cancelled))
+    if (showSavedCookieDialog) {
+        SavedCookieActionDialog(
+            title = stringResource(R.string.settings_bili_saved_cookie_title),
+            message = stringResource(R.string.settings_bili_saved_cookie_message),
+            onDismiss = onDismissSavedCookieDialog,
+            onContinueLogin = {
+                onDismissSavedCookieDialog()
+                onOpenSheetAtTab(0)
+            },
+            onLogout = {
+                onDismissSavedCookieDialog()
+                onLogout?.invoke()
             }
+        )
+    }
+
+    if (showSheet) {
+        val launchBrowserLogin: () -> Unit = onBrowserLogin?.let { injectedBrowserLogin ->
+            {
+                onInlineMsgChange(null)
+                injectedBrowserLogin()
+            }
+        } ?: run {
+            val webLoginLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult()
+            ) { result ->
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    val json = result.data?.getStringExtra(BiliWebLoginActivity.RESULT_COOKIE) ?: "{}"
+                    vm.importCookiesFromMap(vm.parseJsonToMap(json))
+                } else {
+                    onInlineMsgChange(context.getString(R.string.settings_cookie_cancelled))
+                }
+            }
+            val defaultBrowserLogin: () -> Unit = {
+                onInlineMsgChange(null)
+                webLoginLauncher.launch(Intent(context, BiliWebLoginActivity::class.java))
+            }
+            defaultBrowserLogin
         }
 
         TwoTabCookieLoginSheet(
@@ -116,10 +139,7 @@ internal fun SettingsBiliAuthDialogs(
                 Spacer(Modifier.height(12.dp))
             },
             cookieLabel = stringResource(R.string.login_paste_bili_cookie_hint),
-            onBrowserLogin = {
-                onInlineMsgChange(null)
-                webLoginLauncher.launch(Intent(context, BiliWebLoginActivity::class.java))
-            },
+            onBrowserLogin = launchBrowserLogin,
             onSaveCookie = { rawCookie ->
                 if (rawCookie.isBlank()) {
                     onInlineMsgChange(context.getString(R.string.auth_cookie_empty))
@@ -137,67 +157,6 @@ internal fun SettingsBiliAuthDialogs(
             onDismiss = onDismissCookieDialog
         )
     }
-
-    reauthHealth?.takeIf { showReauthDialog }?.let { health ->
-        val title = when (health.state) {
-            SavedCookieAuthState.Missing -> stringResource(R.string.settings_bili_reauth_required_title)
-            SavedCookieAuthState.Expired -> stringResource(R.string.settings_bili_reauth_expired_title)
-            SavedCookieAuthState.Stale -> stringResource(R.string.settings_bili_reauth_stale_title)
-            SavedCookieAuthState.Valid,
-            SavedCookieAuthState.Checking -> stringResource(R.string.platform_bilibili)
-        }
-        val message = when (health.state) {
-            SavedCookieAuthState.Missing -> stringResource(R.string.settings_bili_reauth_required_message)
-            SavedCookieAuthState.Expired -> stringResource(R.string.settings_bili_reauth_expired_message)
-            SavedCookieAuthState.Stale -> {
-                val savedAtLabel = health.savedAt
-                    .takeIf { it > 0L }
-                    ?.let(::convertTimestampToDate)
-                    ?: stringResource(R.string.settings_bili_reauth_unknown_time)
-                pluralStringResource(
-                    R.plurals.settings_bili_reauth_stale_message,
-                    (BILI_AUTH_STALE_AFTER_MS / (24L * 60L * 60L * 1000L)).toInt(),
-                    (BILI_AUTH_STALE_AFTER_MS / (24L * 60L * 60L * 1000L)).toInt(),
-                    savedAtLabel
-                )
-            }
-            SavedCookieAuthState.Valid,
-            SavedCookieAuthState.Checking -> ""
-        }
-
-        AlertDialog(
-            onDismissRequest = onDismissReauthDialog,
-            title = { Text(title) },
-            text = { Text(message) },
-            confirmButton = {
-                HapticTextButton(
-                    onClick = {
-                        onDismissReauthDialog()
-                        onInlineMsgChange(null)
-                        onOpenSheetAtTab(0)
-                    }
-                ) {
-                    Text(stringResource(R.string.settings_bili_reauth_action_login))
-                }
-            },
-            dismissButton = {
-                Row {
-                    HapticTextButton(
-                        onClick = {
-                            onDismissReauthDialog()
-                            onInlineMsgChange(null)
-                            onOpenSheetAtTab(1)
-                        }
-                    ) {
-                        Text(stringResource(R.string.settings_bili_reauth_action_import))
-                    }
-                    HapticTextButton(onClick = onDismissReauthDialog) {
-                        Text(stringResource(R.string.action_later))
-                    }
-                }
-            }
-        )
-    }
 }
 
 @Composable
@@ -211,20 +170,53 @@ internal fun SettingsYouTubeAuthDialogs(
     vm: YouTubeAuthViewModel,
     showCookieDialog: Boolean,
     cookieText: String,
-    onDismissCookieDialog: () -> Unit
+    onDismissCookieDialog: () -> Unit,
+    showSavedCookieDialog: Boolean = false,
+    onDismissSavedCookieDialog: () -> Unit = {},
+    onOpenSheetAtTab: (Int) -> Unit = {},
+    onLogout: (() -> Unit)? = null,
+    onBrowserLogin: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
 
-    if (showSheet) {
-        val webLoginLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            if (result.resultCode == android.app.Activity.RESULT_OK) {
-                val json = result.data?.getStringExtra(YouTubeWebLoginActivity.RESULT_AUTH_JSON) ?: "{}"
-                vm.importAuthFromJson(json)
-            } else {
-                onInlineMsgChange(context.getString(R.string.settings_cookie_cancelled))
+    if (showSavedCookieDialog) {
+        SavedCookieActionDialog(
+            title = stringResource(R.string.settings_youtube_saved_cookie_title),
+            message = stringResource(R.string.settings_youtube_saved_cookie_message),
+            onDismiss = onDismissSavedCookieDialog,
+            onContinueLogin = {
+                onDismissSavedCookieDialog()
+                onOpenSheetAtTab(0)
+            },
+            onLogout = {
+                onDismissSavedCookieDialog()
+                onLogout?.invoke()
             }
+        )
+    }
+
+    if (showSheet) {
+        val launchBrowserLogin: () -> Unit = onBrowserLogin?.let { injectedBrowserLogin ->
+            {
+                onInlineMsgChange(null)
+                injectedBrowserLogin()
+            }
+        } ?: run {
+            val webLoginLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult()
+            ) { result ->
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    val json = result.data?.getStringExtra(YouTubeWebLoginActivity.RESULT_AUTH_JSON) ?: "{}"
+                    vm.importAuthFromJson(json)
+                } else {
+                    onInlineMsgChange(context.getString(R.string.settings_cookie_cancelled))
+                }
+            }
+            val defaultBrowserLogin: () -> Unit = {
+                onInlineMsgChange(null)
+                webLoginLauncher.launch(Intent(context, YouTubeWebLoginActivity::class.java))
+            }
+            defaultBrowserLogin
         }
 
         TwoTabCookieLoginSheet(
@@ -250,10 +242,7 @@ internal fun SettingsYouTubeAuthDialogs(
                 Spacer(Modifier.height(12.dp))
             },
             cookieLabel = stringResource(R.string.login_paste_youtube_cookie_hint),
-            onBrowserLogin = {
-                onInlineMsgChange(null)
-                webLoginLauncher.launch(Intent(context, YouTubeWebLoginActivity::class.java))
-            },
+            onBrowserLogin = launchBrowserLogin,
             onSaveCookie = { rawCookie ->
                 if (rawCookie.isBlank()) {
                     onInlineMsgChange(context.getString(R.string.auth_cookie_empty))
@@ -366,4 +355,29 @@ private fun TwoTabCookieLoginSheet(
             }
         }
     }
+}
+
+@Composable
+internal fun SavedCookieActionDialog(
+    title: String,
+    message: String,
+    onDismiss: () -> Unit,
+    onContinueLogin: () -> Unit,
+    onLogout: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = {
+            HapticTextButton(onClick = onContinueLogin) {
+                Text(stringResource(R.string.settings_saved_cookie_continue))
+            }
+        },
+        dismissButton = {
+            HapticTextButton(onClick = onLogout) {
+                Text(stringResource(R.string.settings_saved_cookie_logout))
+            }
+        }
+    )
 }

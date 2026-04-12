@@ -25,6 +25,7 @@
 
 import android.content.Intent
 import android.net.Uri
+import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -73,6 +74,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -114,7 +116,6 @@ import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
 import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthState
 import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
@@ -123,6 +124,7 @@ import moe.ouom.neriplayer.data.settings.MAX_LYRIC_FONT_SCALE
 import moe.ouom.neriplayer.data.settings.MIN_LYRIC_FONT_SCALE
 import moe.ouom.neriplayer.data.settings.background.BackgroundImageStorage
 import moe.ouom.neriplayer.data.settings.scaledLyricFontSize
+import moe.ouom.neriplayer.listentogether.configuredListenTogetherBaseUrlOrNull
 import moe.ouom.neriplayer.listentogether.isDefaultListenTogetherBaseUrl
 import moe.ouom.neriplayer.listentogether.resolveListenTogetherBaseUrl
 import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
@@ -167,7 +169,8 @@ private data class PendingDownloadDirectoryChange(
     val releaseTargetPermissionOnCancel: Boolean
 ) {
     val shouldReleasePreviousPermission: Boolean
-        get() = !previousUri.isNullOrBlank() && previousUri != targetUri
+        get() = !previousUri.isNullOrBlank() &&
+            !ManagedDownloadStorage.areEquivalentDirectoryUris(previousUri, targetUri)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -196,6 +199,8 @@ fun SettingsScreen(
     onLyricBlurEnabledChange: (Boolean) -> Unit,
     lyricBlurAmount: Float,
     onLyricBlurAmountChange: (Float) -> Unit,
+    advancedLyricsEnabled: Boolean,
+    onAdvancedLyricsEnabledChange: (Boolean) -> Unit,
     advancedBlurEnabled: Boolean,
     onAdvancedBlurEnabledChange: (Boolean) -> Unit,
     nowPlayingAudioReactiveEnabled: Boolean,
@@ -232,6 +237,8 @@ fun SettingsScreen(
     onShowCoverSourceBadgeChange: (Boolean) -> Unit,
     nowPlayingToolbarDockEnabled: Boolean,
     onNowPlayingToolbarDockEnabledChange: (Boolean) -> Unit,
+    showNowPlayingTitle: Boolean,
+    onShowNowPlayingTitleChange: (Boolean) -> Unit,
     showNowPlayingProgressQualitySwitch: Boolean,
     onShowNowPlayingProgressQualitySwitchChange: (Boolean) -> Unit,
     showNowPlayingProgressAudioCodec: Boolean,
@@ -288,9 +295,9 @@ fun SettingsScreen(
     val listenTogetherApi = remember { AppContainer.listenTogetherApi }
     val listenTogetherSessionManager = remember { AppContainer.listenTogetherSessionManager }
     val listenTogetherSessionState by listenTogetherSessionManager.sessionState.collectAsState()
-    val listenTogetherWorkerBaseUrl by listenTogetherPreferences.workerBaseUrlFlow.collectAsState(initial = "")
     val youtubeReverseProxyEnabled by settingsRepo.youtubeReverseProxyEnabledFlow.collectAsState(initial = false)
     val youtubeReverseProxyBaseUrl by settingsRepo.youtubeReverseProxyBaseUrlFlow.collectAsState(initial = "")
+    val listenTogetherWorkerBaseUrlInput by listenTogetherPreferences.workerBaseUrlInputFlow.collectAsState(initial = "")
     var pendingBackgroundImageBlur by rememberSaveable(backgroundImageUri) {
         mutableFloatStateOf(backgroundImageBlur)
     }
@@ -393,13 +400,14 @@ fun SettingsScreen(
     var showDefaultStartDestinationDialog by remember { mutableStateOf(false) }
     var showConfirmDialog by remember { mutableStateOf(false) }
     var showCookieDialog by remember { mutableStateOf(false) }
+    var showNeteaseSavedCookieDialog by remember { mutableStateOf(false) }
     var showBiliSheet by remember { mutableStateOf(false) }
     var showBiliCookieDialog by remember { mutableStateOf(false) }
-    var showBiliReauthDialog by remember { mutableStateOf(false) }
+    var showBiliSavedCookieDialog by remember { mutableStateOf(false) }
     var showYouTubeSheet by remember { mutableStateOf(false) }
     var showYouTubeCookieDialog by remember { mutableStateOf(false) }
+    var showYouTubeSavedCookieDialog by remember { mutableStateOf(false) }
 
-    var showNeteaseReauthDialog by remember { mutableStateOf(false) }
     var showColorPickerDialog by remember { mutableStateOf(false) }
     var showDpiDialog by remember { mutableStateOf(false) }
     var showGitHubConfigDialog by remember { mutableStateOf(false) }
@@ -417,14 +425,14 @@ fun SettingsScreen(
     var inlineMsg by remember { mutableStateOf<String?>(null) }
     var pendingDownloadDirectoryChange by remember { mutableStateOf<PendingDownloadDirectoryChange?>(null) }
     var isMigratingDownloadDirectory by remember { mutableStateOf(false) }
+    val migrationProgress by ManagedDownloadStorage.migrationProgressFlow.collectAsState()
+    val hasActiveDownloadOperations by GlobalDownloadManager.activeDownloadOperationsFlow.collectAsState()
     var confirmPhoneMasked by remember { mutableStateOf<String?>(null) }
     var cookieText by remember { mutableStateOf("") }
     var versionTapCount by remember { mutableIntStateOf(0) }
     var biliCookieText by remember { mutableStateOf("") }
     val biliVm: BiliAuthViewModel = viewModel()
-    var biliReauthHealth by remember { mutableStateOf<SavedCookieAuthHealth?>(null) }
     var biliSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
-    var neteaseReauthHealth by remember { mutableStateOf<SavedCookieAuthHealth?>(null) }
     var neteaseSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
     var youtubeCookieText by remember { mutableStateOf("") }
     val youtubeVm: YouTubeAuthViewModel = viewModel()
@@ -436,6 +444,29 @@ fun SettingsScreen(
     val localPlaylistRepo = remember(context) { LocalPlaylistRepository.getInstance(context) }
     val localPlaylists by localPlaylistRepo.playlists.collectAsState(initial = emptyList())
     val defaultDownloadDirectorySummary = context.getString(R.string.settings_download_directory_default_label)
+    val downloadDirectoryChangeEnabled = !hasActiveDownloadOperations && !isMigratingDownloadDirectory
+
+    fun guardDownloadDirectoryChange(
+        targetUri: String? = null,
+        releaseTargetPermissionOnBlock: Boolean = false
+    ): Boolean {
+        if (!GlobalDownloadManager.hasActiveDownloadOperations()) {
+            return false
+        }
+        if (
+            releaseTargetPermissionOnBlock &&
+            !targetUri.isNullOrBlank() &&
+            !ManagedDownloadStorage.areEquivalentDirectoryUris(downloadDirectoryUri, targetUri)
+        ) {
+            ManagedDownloadStorage.releasePersistedDirectoryPermission(context, targetUri)
+        }
+        val message = context.getString(
+            R.string.settings_download_directory_change_blocked_active_download
+        )
+        inlineMsg = message
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        return true
+    }
 
     fun applyDownloadDirectoryChange(
         targetUri: String?,
@@ -478,6 +509,14 @@ fun SettingsScreen(
         targetSummary: String,
         releaseTargetPermissionOnCancel: Boolean
     ) {
+        if (
+            guardDownloadDirectoryChange(
+                targetUri = targetUri,
+                releaseTargetPermissionOnBlock = releaseTargetPermissionOnCancel
+            )
+        ) {
+            return
+        }
         val previousUri = downloadDirectoryUri?.takeIf { it.isNotBlank() }
         if (previousUri == targetUri) {
             inlineMsg = if (targetUri.isNullOrBlank()) {
@@ -488,7 +527,31 @@ fun SettingsScreen(
             return
         }
 
-        val hasMigratableDownloads = ManagedDownloadStorage.hasMigratableDownloads(context, previousUri)
+        if (ManagedDownloadStorage.areEquivalentDirectoryUris(previousUri, targetUri)) {
+            runCatching {
+                applyDownloadDirectoryChange(
+                    targetUri = targetUri,
+                    targetSummary = targetSummary,
+                    previousUri = previousUri,
+                    shouldReleasePreviousPermission = false
+                )
+            }.onFailure {
+                if (releaseTargetPermissionOnCancel) {
+                    ManagedDownloadStorage.releasePersistedDirectoryPermission(context, targetUri)
+                }
+                inlineMsg = context.getString(
+                    R.string.settings_download_directory_pick_failed,
+                    it.message ?: ""
+                )
+            }
+            return
+        }
+
+        val hasMigratableDownloads = if (GlobalDownloadManager.downloadedSongs.value.isNotEmpty()) {
+            true
+        } else {
+            ManagedDownloadStorage.mayHaveMigratableDownloads(context, previousUri)
+        }
         if (hasMigratableDownloads) {
             pendingDownloadDirectoryChange = PendingDownloadDirectoryChange(
                 previousUri = previousUri,
@@ -542,6 +605,9 @@ fun SettingsScreen(
         if (uri == null) {
             return@rememberLauncherForActivityResult
         }
+        if (guardDownloadDirectoryChange()) {
+            return@rememberLauncherForActivityResult
+        }
         try {
             val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(uri, flags)
@@ -562,9 +628,9 @@ fun SettingsScreen(
         }
     }
 
-    LaunchedEffect(listenTogetherWorkerBaseUrl) {
-        if (listenTogetherServerInput != listenTogetherWorkerBaseUrl) {
-            listenTogetherServerInput = listenTogetherWorkerBaseUrl
+    LaunchedEffect(listenTogetherWorkerBaseUrlInput) {
+        if (listenTogetherServerInput != listenTogetherWorkerBaseUrlInput) {
+            listenTogetherServerInput = listenTogetherWorkerBaseUrlInput
         }
     }
 
@@ -572,12 +638,14 @@ fun SettingsScreen(
         ManagedDownloadStorage.describeConfiguredDirectory(context, downloadDirectoryUri)
     }
     val resetDownloadDirectory: () -> Unit = {
-        scope.launch {
-            prepareDownloadDirectoryChange(
-                targetUri = null,
-                targetSummary = defaultDownloadDirectorySummary,
-                releaseTargetPermissionOnCancel = false
-            )
+        if (!guardDownloadDirectoryChange()) {
+            scope.launch {
+                prepareDownloadDirectoryChange(
+                    targetUri = null,
+                    targetSummary = defaultDownloadDirectorySummary,
+                    releaseTargetPermissionOnCancel = false
+                )
+            }
         }
     }
 
@@ -703,20 +771,15 @@ fun SettingsScreen(
                     showConfirmDialog = true
                 }
                 NeteaseAuthEvent.LoginSuccess -> {
+                    showNeteaseSavedCookieDialog = false
                     inlineMsg = null
                     showNeteaseSheet = false
-                    showNeteaseReauthDialog = false
-                    neteaseReauthHealth = null
                     inlineMsg = context.getString(R.string.settings_netease_login_success)
-                    neteaseVm.refreshAuthHealth(promptIfNeeded = true, forcePrompt = true)
+                    neteaseVm.refreshAuthHealth()
                 }
                 is NeteaseAuthEvent.ShowCookies -> {
                     cookieText = e.cookies.entries.joinToString("\n") { (k, v) -> "$k=${maskCookieValue(v)}" }
                     showCookieDialog = true
-                }
-                is NeteaseAuthEvent.PromptReauth -> {
-                    neteaseReauthHealth = e.health
-                    showNeteaseReauthDialog = true
                 }
             }
         }
@@ -731,15 +794,10 @@ fun SettingsScreen(
                     showBiliCookieDialog = true
                 }
                 BiliAuthEvent.LoginSuccess -> {
+                    showBiliSavedCookieDialog = false
                     showBiliSheet = false
-                    showBiliReauthDialog = false
-                    biliReauthHealth = null
                     inlineMsg = context.getString(R.string.settings_bili_login_success)
-                    biliVm.refreshAuthHealth(promptIfNeeded = true, forcePrompt = true)
-                }
-                is BiliAuthEvent.PromptReauth -> {
-                    biliReauthHealth = e.health
-                    showBiliReauthDialog = true
+                    biliVm.refreshAuthHealth()
                 }
             }
         }
@@ -756,8 +814,10 @@ fun SettingsScreen(
                     showYouTubeCookieDialog = true
                 }
                 YouTubeAuthEvent.LoginSuccess -> {
+                    showYouTubeSavedCookieDialog = false
                     showYouTubeSheet = false
                     inlineMsg = context.getString(R.string.settings_youtube_login_success)
+                    youtubeVm.refreshAuthHealth()
                 }
 
             }
@@ -833,7 +893,7 @@ fun SettingsScreen(
             }
 
             item {
-                AnimatedVisibility(visible = !dynamicColor) { // 仅在关闭系统动态取色时显示
+                LazyAnimatedVisibility(visible = !dynamicColor) { // 仅在关闭系统动态取色时显示
                     ThemeSeedListItem(
                         seedColorHex = seedColorHex,
                         onClick = { showColorPickerDialog = true }
@@ -941,10 +1001,22 @@ fun SettingsScreen(
                         biliVm = biliVm,
                         youtubeVm = youtubeVm,
                         neteaseVm = neteaseVm,
-                        onOpenBiliSheet = {
+                        onOpenBiliSheet = { tab ->
                             inlineMsg = null
-                            biliSheetInitialTab = 0
+                            biliSheetInitialTab = tab
                             showBiliSheet = true
+                        },
+                        onOpenBiliSavedCookieDialog = {
+                            inlineMsg = null
+                            showBiliSavedCookieDialog = true
+                        },
+                        onOpenYouTubeSavedCookieDialog = {
+                            inlineMsg = null
+                            showYouTubeSavedCookieDialog = true
+                        },
+                        onOpenNeteaseSavedCookieDialog = {
+                            inlineMsg = null
+                            showNeteaseSavedCookieDialog = true
                         },
                         onOpenYouTubeSheet = {
                             inlineMsg = null
@@ -1161,7 +1233,7 @@ fun SettingsScreen(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                         )
 
-                        AnimatedVisibility(visible = !homeStartAvailable) {
+                        LazyAnimatedVisibility(visible = !homeStartAvailable) {
                             Text(
                                 text = stringResource(R.string.settings_home_hidden_notice),
                                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
@@ -1197,6 +1269,26 @@ fun SettingsScreen(
                                 Switch(
                                     checked = showCoverSourceBadge,
                                     onCheckedChange = onShowCoverSourceBadgeChange
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+
+                        ListItem(
+                            leadingContent = {
+                                Icon(
+                                    imageVector = Icons.Outlined.LibraryMusic,
+                                    contentDescription = stringResource(R.string.settings_nowplaying_title),
+                                    modifier = Modifier.size(24.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            headlineContent = { Text(stringResource(R.string.settings_nowplaying_title)) },
+                            supportingContent = { Text(stringResource(R.string.settings_nowplaying_title_desc)) },
+                            trailingContent = {
+                                Switch(
+                                    checked = showNowPlayingTitle,
+                                    onCheckedChange = onShowNowPlayingTitleChange
                                 )
                             },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
@@ -1380,7 +1472,7 @@ fun SettingsScreen(
                         )
 
                         // 展开区域
-                        AnimatedVisibility(visible = backgroundImageUri != null) {
+                        LazyAnimatedVisibility(visible = backgroundImageUri != null) {
                                 Column {
                                     // 清除背景图按钮
                                 TextButton(onClick = {
@@ -1440,13 +1532,15 @@ fun SettingsScreen(
                   }
               }
 
-              item {
-                  SettingsMotionSection(
-                      expanded = motionExpanded,
-                      arrowRotation = motionArrowRotation,
-                      onExpandedChange = { motionExpanded = it },
-                      advancedBlurEnabled = advancedBlurEnabled,
-                      onAdvancedBlurEnabledChange = onAdvancedBlurEnabledChange,
+                item {
+                    SettingsMotionSection(
+                        expanded = motionExpanded,
+                        arrowRotation = motionArrowRotation,
+                        onExpandedChange = { motionExpanded = it },
+                        advancedLyricsEnabled = advancedLyricsEnabled,
+                        onAdvancedLyricsEnabledChange = onAdvancedLyricsEnabledChange,
+                        advancedBlurEnabled = advancedBlurEnabled,
+                        onAdvancedBlurEnabledChange = onAdvancedBlurEnabledChange,
                       nowPlayingAudioReactiveEnabled = nowPlayingAudioReactiveEnabled,
                       onNowPlayingAudioReactiveEnabledChange = onNowPlayingAudioReactiveEnabledChange,
                       nowPlayingDynamicBackgroundEnabled = nowPlayingDynamicBackgroundEnabled,
@@ -1663,7 +1757,12 @@ fun SettingsScreen(
                     onExpandedChange = { cacheExpanded = it },
                     currentDownloadDirectorySummary = downloadDirectorySummary,
                     isCustomDownloadDirectory = !downloadDirectoryUri.isNullOrBlank(),
-                    onPickDownloadDirectory = { downloadDirectoryLauncher.launch(null) },
+                    downloadDirectoryChangeEnabled = downloadDirectoryChangeEnabled,
+                    onPickDownloadDirectory = {
+                        if (!guardDownloadDirectoryChange()) {
+                            downloadDirectoryLauncher.launch(null)
+                        }
+                    },
                     onResetDownloadDirectory = resetDownloadDirectory,
                     downloadFileNameTemplate = downloadFileNameTemplate,
                     onDownloadFileNameTemplateChange = onDownloadFileNameTemplateChange,
@@ -1733,7 +1832,7 @@ fun SettingsScreen(
             }
 
             item {
-                AnimatedVisibility(
+                LazyAnimatedVisibility(
                     visible = listenTogetherExpanded,
                     enter = fadeIn() + expandVertically(),
                     exit = fadeOut() + shrinkVertically()
@@ -1744,7 +1843,9 @@ fun SettingsScreen(
                             .background(Color.Transparent)
                             .padding(start = 16.dp, end = 8.dp, bottom = 8.dp),
                         isUsingDefaultServer = listenTogetherServerInput.isBlank() ||
-                            isDefaultListenTogetherBaseUrl(resolveListenTogetherBaseUrl(listenTogetherServerInput)),
+                            configuredListenTogetherBaseUrlOrNull(listenTogetherServerInput)?.let(
+                                ::isDefaultListenTogetherBaseUrl
+                            ) == true,
                         isInRoom = !listenTogetherSessionState.roomId.isNullOrBlank(),
                         testing = listenTogetherServerTesting,
                         testMessage = listenTogetherServerTestMessage,
@@ -1798,16 +1899,18 @@ fun SettingsScreen(
         showCookieDialog = showCookieDialog,
         cookieText = cookieText,
         onDismissCookieDialog = { showCookieDialog = false },
-        showReauthDialog = showNeteaseReauthDialog,
-        reauthHealth = neteaseReauthHealth,
-        onDismissReauthDialog = {
-            showNeteaseReauthDialog = false
-            neteaseReauthHealth = null
-        },
+        showSavedCookieDialog = showNeteaseSavedCookieDialog,
+        onDismissSavedCookieDialog = { showNeteaseSavedCookieDialog = false },
         onOpenSheetAtTab = { tab ->
+            inlineMsg = null
             neteaseSheetInitialTab = tab
             showNeteaseSheet = true
-        }
+        },
+        onLogout = {
+            showNeteaseSavedCookieDialog = false
+            neteaseVm.clearCookies()
+        },
+        onBrowserLogin = null
     )
 
     SettingsBiliAuthDialogs(
@@ -1820,16 +1923,18 @@ fun SettingsScreen(
         showCookieDialog = showBiliCookieDialog,
         cookieText = biliCookieText,
         onDismissCookieDialog = { showBiliCookieDialog = false },
-        showReauthDialog = showBiliReauthDialog,
-        reauthHealth = biliReauthHealth,
-        onDismissReauthDialog = {
-            showBiliReauthDialog = false
-            biliReauthHealth = null
-        },
+        showSavedCookieDialog = showBiliSavedCookieDialog,
+        onDismissSavedCookieDialog = { showBiliSavedCookieDialog = false },
         onOpenSheetAtTab = { tab ->
+            inlineMsg = null
             biliSheetInitialTab = tab
             showBiliSheet = true
-        }
+        },
+        onLogout = {
+            showBiliSavedCookieDialog = false
+            biliVm.clearCookies()
+        },
+        onBrowserLogin = null
     )
 
     SettingsYouTubeAuthDialogs(
@@ -1842,7 +1947,18 @@ fun SettingsScreen(
         vm = youtubeVm,
         showCookieDialog = showYouTubeCookieDialog,
         cookieText = youtubeCookieText,
-        onDismissCookieDialog = { showYouTubeCookieDialog = false }
+        onDismissCookieDialog = { showYouTubeCookieDialog = false },
+        showSavedCookieDialog = showYouTubeSavedCookieDialog,
+        onDismissSavedCookieDialog = { showYouTubeSavedCookieDialog = false },
+        onOpenSheetAtTab = { tab ->
+            inlineMsg = null
+            youtubeSheetInitialTab = tab
+            showYouTubeSheet = true
+        },
+        onLogout = {
+            showYouTubeSavedCookieDialog = false
+            youtubeVm.clearAuth()
+        }
     )
     SettingsPreferenceDialogs(
         showDefaultStartDestinationDialog = showDefaultStartDestinationDialog,
@@ -1897,7 +2013,7 @@ fun SettingsScreen(
             onDismissRequest = {
                 if (!listenTogetherServerTesting) {
                     showListenTogetherServerDialog = false
-                    listenTogetherServerInput = listenTogetherWorkerBaseUrl
+                    listenTogetherServerInput = listenTogetherWorkerBaseUrlInput
                     listenTogetherServerTestMessage = null
                 }
             },
@@ -1906,7 +2022,9 @@ fun SettingsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         if (listenTogetherServerInput.isBlank() ||
-                            isDefaultListenTogetherBaseUrl(resolveListenTogetherBaseUrl(listenTogetherServerInput))
+                            configuredListenTogetherBaseUrlOrNull(listenTogetherServerInput)?.let(
+                                ::isDefaultListenTogetherBaseUrl
+                            ) == true
                         ) {
                             stringResource(R.string.settings_listen_together_server_default_desc)
                         } else {
@@ -1948,11 +2066,18 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = {
                                 scope.launch {
+                                    val normalizedCustomServer =
+                                        configuredListenTogetherBaseUrlOrNull(listenTogetherServerInput)
+                                    if (listenTogetherServerInput.isNotBlank() && normalizedCustomServer == null) {
+                                        listenTogetherServerTestMessage = context.getString(
+                                            R.string.settings_listen_together_server_input_invalid
+                                        )
+                                        return@launch
+                                    }
                                     listenTogetherServerTesting = true
-                                    val usingDefaultServer = listenTogetherServerInput.isBlank() ||
-                                        isDefaultListenTogetherBaseUrl(resolveListenTogetherBaseUrl(listenTogetherServerInput))
+                                    val usingDefaultServer = normalizedCustomServer == null
                                     val result = listenTogetherApi.testServerAvailability(
-                                        resolveListenTogetherBaseUrl(listenTogetherServerInput)
+                                        normalizedCustomServer ?: resolveListenTogetherBaseUrl(null)
                                     )
                                     listenTogetherServerTesting = false
                                     listenTogetherServerTestMessage = when {
@@ -1992,9 +2117,17 @@ fun SettingsScreen(
                 HapticTextButton(
                     onClick = {
                         scope.launch {
-                            val normalizedInput = listenTogetherServerInput.trim()
-                            listenTogetherPreferences.setWorkerBaseUrl(normalizedInput)
-                            listenTogetherServerInput = normalizedInput
+                            val normalizedInput =
+                                configuredListenTogetherBaseUrlOrNull(listenTogetherServerInput)
+                            if (listenTogetherServerInput.isNotBlank() && normalizedInput == null) {
+                                listenTogetherServerTestMessage = context.getString(
+                                    R.string.settings_listen_together_server_input_invalid
+                                )
+                                return@launch
+                            }
+                            listenTogetherPreferences.setWorkerBaseUrl(normalizedInput.orEmpty())
+                            listenTogetherPreferences.setWorkerBaseUrlInput(normalizedInput.orEmpty())
+                            listenTogetherServerInput = normalizedInput.orEmpty()
                             showListenTogetherServerDialog = false
                             listenTogetherServerTestMessage = null
                             Toast.makeText(
@@ -2013,7 +2146,7 @@ fun SettingsScreen(
                 HapticTextButton(
                     onClick = {
                         showListenTogetherServerDialog = false
-                        listenTogetherServerInput = listenTogetherWorkerBaseUrl
+                        listenTogetherServerInput = listenTogetherWorkerBaseUrlInput
                         listenTogetherServerTestMessage = null
                     },
                     enabled = !listenTogetherServerTesting
@@ -2060,7 +2193,17 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(
+                    enabled = downloadDirectoryChangeEnabled,
                     onClick = {
+                        if (
+                            guardDownloadDirectoryChange(
+                                targetUri = pendingChange.targetUri,
+                                releaseTargetPermissionOnBlock = pendingChange.releaseTargetPermissionOnCancel
+                            )
+                        ) {
+                            pendingDownloadDirectoryChange = null
+                            return@TextButton
+                        }
                         pendingDownloadDirectoryChange = null
                         scope.launch {
                             isMigratingDownloadDirectory = true
@@ -2114,7 +2257,17 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(
+                    enabled = downloadDirectoryChangeEnabled,
                     onClick = {
+                        if (
+                            guardDownloadDirectoryChange(
+                                targetUri = pendingChange.targetUri,
+                                releaseTargetPermissionOnBlock = pendingChange.releaseTargetPermissionOnCancel
+                            )
+                        ) {
+                            pendingDownloadDirectoryChange = null
+                            return@TextButton
+                        }
                         pendingDownloadDirectoryChange = null
                         scope.launch {
                             runCatching {
@@ -2146,16 +2299,69 @@ fun SettingsScreen(
     }
 
     if (isMigratingDownloadDirectory) {
+        val activeMigrationProgress = migrationProgress
+        val stageText = when (activeMigrationProgress?.stage) {
+            ManagedDownloadStorage.MigrationStage.PREPARING ->
+                stringResource(R.string.settings_download_directory_migrating_stage_preparing)
+            ManagedDownloadStorage.MigrationStage.COPYING ->
+                stringResource(R.string.settings_download_directory_migrating_stage_copying)
+            ManagedDownloadStorage.MigrationStage.REWRITING_METADATA ->
+                stringResource(R.string.settings_download_directory_migrating_stage_rewriting)
+            ManagedDownloadStorage.MigrationStage.CLEANING_UP ->
+                stringResource(R.string.settings_download_directory_migrating_stage_cleanup)
+            ManagedDownloadStorage.MigrationStage.FINALIZING ->
+                stringResource(R.string.settings_download_directory_migrating)
+            null -> stringResource(R.string.settings_download_directory_migrating_desc)
+        }
+        val progressFraction = activeMigrationProgress?.fraction?.coerceIn(0f, 1f) ?: 0f
+        val processedSummary = activeMigrationProgress?.let { progress ->
+            context.getString(
+                R.string.settings_download_directory_migrating_progress_files,
+                progress.stageProcessed.coerceAtLeast(0),
+                progress.stageTotal.coerceAtLeast(0)
+            )
+        }
+        val copiedBytesSummary = activeMigrationProgress
+            ?.takeIf { it.totalBytes > 0L }
+            ?.let { progress ->
+                context.getString(
+                    R.string.settings_download_directory_migrating_progress_bytes,
+                    Formatter.formatShortFileSize(context, progress.copiedBytes.coerceAtLeast(0L)),
+                    Formatter.formatShortFileSize(context, progress.totalBytes)
+                )
+            }
+        val currentFileSummary = activeMigrationProgress?.currentFileName
+            ?.takeIf(String::isNotBlank)
+            ?.let { fileName ->
+                context.getString(R.string.settings_download_directory_migrating_current, fileName)
+            }
         AlertDialog(
             onDismissRequest = {},
             title = { Text(stringResource(R.string.settings_download_directory_migrating)) },
             text = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                    Text(stringResource(R.string.settings_download_directory_migrating_desc))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        Text(stageText)
+                    }
+                    LinearProgressIndicator(
+                        progress = { progressFraction },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    processedSummary?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    copiedBytesSummary?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    currentFileSummary?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             },
             confirmButton = {}
@@ -2250,7 +2456,10 @@ private fun SettingsLoginExpandedContent(
     biliVm: BiliAuthViewModel,
     youtubeVm: YouTubeAuthViewModel,
     neteaseVm: NeteaseAuthViewModel,
-    onOpenBiliSheet: () -> Unit,
+    onOpenBiliSheet: (Int) -> Unit,
+    onOpenBiliSavedCookieDialog: () -> Unit,
+    onOpenYouTubeSavedCookieDialog: () -> Unit,
+    onOpenNeteaseSavedCookieDialog: () -> Unit,
     onOpenYouTubeSheet: () -> Unit,
     onOpenNeteaseSheet: () -> Unit,
 ) {
@@ -2259,8 +2468,8 @@ private fun SettingsLoginExpandedContent(
     val neteaseAuthUiState by neteaseVm.uiState.collectAsStateWithLifecycleCompat()
 
     LaunchedEffect(biliVm, youtubeVm, neteaseVm) {
-        biliVm.refreshAuthHealth(promptIfNeeded = true)
-        neteaseVm.refreshAuthHealth(promptIfNeeded = true)
+        biliVm.refreshAuthHealth()
+        neteaseVm.refreshAuthHealth()
         youtubeVm.refreshAuthHealth()
     }
 
@@ -2272,15 +2481,20 @@ private fun SettingsLoginExpandedContent(
                 ?: stringResource(R.string.time_just_now)
             stringResource(R.string.settings_bili_status_valid, relativeTime)
         }
-        SavedCookieAuthState.Checking -> stringResource(R.string.settings_auth_checking)
-        SavedCookieAuthState.Expired -> stringResource(R.string.settings_bili_status_expired)
-        SavedCookieAuthState.Stale -> {
-            biliAuthUiState.health.savedAt
-                .takeIf { it > 0L }
-                ?.let { stringResource(R.string.settings_bili_status_stale, formatSyncTime(it)) }
-                ?: stringResource(R.string.settings_bili_status_stale_no_time)
+        SavedCookieAuthState.Checking -> {
+            if (biliAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_bili_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_bili_status_missing)
+            }
         }
-        SavedCookieAuthState.Missing -> stringResource(R.string.settings_bili_status_missing)
+        SavedCookieAuthState.Missing -> {
+            if (biliAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_bili_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_bili_status_missing)
+            }
+        }
     }
     val neteaseStatusText = when (neteaseAuthUiState.health.state) {
         SavedCookieAuthState.Valid -> {
@@ -2290,15 +2504,20 @@ private fun SettingsLoginExpandedContent(
                 ?: stringResource(R.string.time_just_now)
             stringResource(R.string.settings_netease_status_valid, relativeTime)
         }
-        SavedCookieAuthState.Checking -> stringResource(R.string.settings_auth_checking)
-        SavedCookieAuthState.Expired -> stringResource(R.string.settings_netease_status_expired)
-        SavedCookieAuthState.Stale -> {
-            neteaseAuthUiState.health.savedAt
-                .takeIf { it > 0L }
-                ?.let { stringResource(R.string.settings_netease_status_stale, formatSyncTime(it)) }
-                ?: stringResource(R.string.settings_netease_status_stale_no_time)
+        SavedCookieAuthState.Checking -> {
+            if (neteaseAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_netease_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_netease_status_missing)
+            }
         }
-        SavedCookieAuthState.Missing -> stringResource(R.string.settings_netease_status_missing)
+        SavedCookieAuthState.Missing -> {
+            if (neteaseAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_netease_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_netease_status_missing)
+            }
+        }
     }
     val youtubeStatusText = when (youtubeAuthUiState.health.state) {
         YouTubeAuthState.Valid -> {
@@ -2308,14 +2527,13 @@ private fun SettingsLoginExpandedContent(
                 ?: stringResource(R.string.time_just_now)
             stringResource(R.string.settings_youtube_status_valid, relativeTime)
         }
-        YouTubeAuthState.Expired -> stringResource(R.string.settings_youtube_status_expired)
-        YouTubeAuthState.Stale -> {
-            youtubeAuthUiState.health.savedAt
-                .takeIf { it > 0L }
-                ?.let { stringResource(R.string.settings_youtube_status_stale, formatSyncTime(it)) }
-                ?: stringResource(R.string.settings_youtube_status_stale_no_time)
+        YouTubeAuthState.Missing -> {
+            if (youtubeAuthUiState.hasSavedAuth) {
+                stringResource(R.string.settings_youtube_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_youtube_status_missing)
+            }
         }
-        YouTubeAuthState.Missing -> stringResource(R.string.settings_youtube_status_missing)
     }
 
     Column(
@@ -2335,7 +2553,15 @@ private fun SettingsLoginExpandedContent(
             },
             headlineContent = { Text(stringResource(R.string.platform_bilibili)) },
             supportingContent = { Text(biliStatusText) },
-            modifier = Modifier.settingsItemClickable(onClick = onOpenBiliSheet),
+            modifier = Modifier.settingsItemClickable(
+                onClick = {
+                    if (biliAuthUiState.hasSavedCookies) {
+                        onOpenBiliSavedCookieDialog()
+                    } else {
+                        onOpenBiliSheet(0)
+                    }
+                }
+            ),
             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
         )
 
@@ -2350,7 +2576,15 @@ private fun SettingsLoginExpandedContent(
             },
             headlineContent = { Text(stringResource(R.string.common_youtube)) },
             supportingContent = { Text(youtubeStatusText) },
-            modifier = Modifier.settingsItemClickable(onClick = onOpenYouTubeSheet),
+            modifier = Modifier.settingsItemClickable(
+                onClick = {
+                    if (youtubeAuthUiState.hasSavedAuth) {
+                        onOpenYouTubeSavedCookieDialog()
+                    } else {
+                        onOpenYouTubeSheet()
+                    }
+                }
+            ),
             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
         )
 
@@ -2365,7 +2599,15 @@ private fun SettingsLoginExpandedContent(
             },
             headlineContent = { Text(stringResource(R.string.platform_netease)) },
             supportingContent = { Text(neteaseStatusText) },
-            modifier = Modifier.settingsItemClickable(onClick = onOpenNeteaseSheet),
+            modifier = Modifier.settingsItemClickable(
+                onClick = {
+                    if (neteaseAuthUiState.hasSavedCookies) {
+                        onOpenNeteaseSavedCookieDialog()
+                    } else {
+                        onOpenNeteaseSheet()
+                    }
+                }
+            ),
             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
         )
 
@@ -2385,5 +2627,4 @@ private fun SettingsLoginExpandedContent(
         )
     }
 }
-
 

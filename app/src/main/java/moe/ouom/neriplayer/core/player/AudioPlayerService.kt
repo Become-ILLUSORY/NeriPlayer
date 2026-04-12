@@ -23,6 +23,7 @@ package moe.ouom.neriplayer.core.player
  * Updated: 2026/3/23
  */
 
+import android.app.Activity
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationChannel
@@ -31,6 +32,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
@@ -53,11 +55,15 @@ import androidx.core.graphics.drawable.DrawableCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media.session.MediaButtonReceiver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import coil.request.ImageRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.R
@@ -67,6 +73,7 @@ import moe.ouom.neriplayer.data.local.media.LocalSongSupport
 import moe.ouom.neriplayer.data.model.displayArtist
 import moe.ouom.neriplayer.data.model.displayName
 import moe.ouom.neriplayer.data.model.sameIdentityAs
+import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.ui.viewmodel.playlist.SongItem
 import moe.ouom.neriplayer.util.NPLogger
 import androidx.core.graphics.createBitmap
@@ -75,16 +82,37 @@ import android.content.pm.ServiceInfo
 import androidx.core.net.toUri
 
 private data class PlaybackNotificationSnapshot(
+    val songKey: String?,
     val title: String,
     val text: String,
     val isTransportActive: Boolean,
+    val isPlaybackControlPlaying: Boolean,
     val isFavorite: Boolean,
     val requiresInteractiveFavoriteConfirmation: Boolean,
     val largeIconReady: Boolean,
     val coverSource: String?,
 )
 
+private data class PlaybackMetadataSnapshot(
+    val songKey: String?,
+    val title: String,
+    val artist: String,
+    val durationMs: Long,
+    val coverSource: String?,
+    val largeIconReady: Boolean,
+)
+
 internal const val MEDIA_SESSION_STOP_SOURCE = "media_session_stop"
+internal const val PLAY_SONGS_AND_OPEN_NOW_PLAYING_SOURCE = "play_songs_and_open_now_playing"
+private const val PLAYBACK_STATE_PROGRESS_BUCKET_MS = 250L
+
+internal fun isLocalPlaybackCommandSyncSource(
+    source: String,
+    hasLocalCurrentSong: Boolean = false
+): Boolean {
+    return source.startsWith("local_playback_command_") ||
+        (hasLocalCurrentSong && source == PLAY_SONGS_AND_OPEN_NOW_PLAYING_SOURCE)
+}
 
 internal fun shouldStopServiceForExternalPauseCommand(
     source: String,
@@ -106,11 +134,107 @@ internal fun mediaSessionPlaybackActions(): Long {
 internal fun shouldUseForegroundServiceStart(
     sdkInt: Int,
     forceForeground: Boolean,
-    shouldRunPlaybackServiceInForeground: Boolean
+    shouldRunPlaybackServiceInForeground: Boolean,
+    callerHasResumedUi: Boolean
 ): Boolean {
+    if (callerHasResumedUi) {
+        return false
+    }
     return sdkInt >= Build.VERSION_CODES.O ||
         forceForeground ||
         shouldRunPlaybackServiceInForeground
+}
+
+internal fun canUseDirectPlaybackServiceStart(
+    isFinishing: Boolean,
+    isDestroyed: Boolean,
+    lifecycleState: Lifecycle.State?,
+    hasWindowFocus: Boolean
+): Boolean {
+    if (isFinishing || isDestroyed) {
+        return false
+    }
+    return lifecycleState?.isAtLeast(Lifecycle.State.RESUMED) == true && hasWindowFocus
+}
+
+internal fun isServiceStartNotAllowedFailure(error: Throwable): Boolean {
+    if (error !is IllegalStateException) {
+        return false
+    }
+    val simpleName = error::class.java.simpleName
+    if (
+        simpleName == "BackgroundServiceStartNotAllowedException" ||
+        simpleName == "ForegroundServiceStartNotAllowedException"
+    ) {
+        return true
+    }
+    return error.message?.contains("Not allowed to start service") == true
+}
+
+internal fun shouldSkipRedundantSyncServiceStart(
+    source: String,
+    lastSuccessfulSource: String?,
+    lastSuccessfulStartElapsedRealtime: Long,
+    nowElapsedRealtime: Long,
+    dedupeWindowMs: Long = 1500L
+): Boolean {
+    if (source != "app_bootstrap") {
+        return false
+    }
+    if (lastSuccessfulStartElapsedRealtime <= 0L) {
+        return false
+    }
+    if (lastSuccessfulSource == null) {
+        return false
+    }
+    val elapsed = nowElapsedRealtime - lastSuccessfulStartElapsedRealtime
+    return elapsed in 0L..dedupeWindowMs
+}
+
+internal fun shouldSkipLocalPlaybackSyncServiceStart(
+    source: String,
+    serviceReady: Boolean,
+    hasItems: Boolean,
+    hasLocalCurrentSong: Boolean = false
+): Boolean {
+    if (!isLocalPlaybackCommandSyncSource(source, hasLocalCurrentSong)) {
+        return false
+    }
+    return serviceReady && hasItems
+}
+
+internal fun shouldSkipFullSyncForLocalPlaybackAction(
+    source: String,
+    foregroundStarted: Boolean,
+    hasItems: Boolean,
+    hasCurrentSong: Boolean,
+    hasLocalCurrentSong: Boolean = false
+): Boolean {
+    if (!isLocalPlaybackCommandSyncSource(source, hasLocalCurrentSong)) {
+        return false
+    }
+    return foregroundStarted && hasItems && hasCurrentSong
+}
+
+private fun Context.findActivityReadyForDirectServiceStart(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) {
+            val isDestroyed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 &&
+                current.isDestroyed
+            val lifecycleState = (current as? LifecycleOwner)?.lifecycle?.currentState
+            return current.takeIf {
+                canUseDirectPlaybackServiceStart(
+                    isFinishing = it.isFinishing,
+                    isDestroyed = isDestroyed,
+                    lifecycleState = lifecycleState,
+                    hasWindowFocus = it.hasWindowFocus()
+                )
+            }
+        }
+        current = current.baseContext
+    }
+    return null
 }
 
 @Suppress("unused")
@@ -128,6 +252,19 @@ class AudioPlayerService : Service() {
 
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "neriplayer_playback_channel"
+        private const val SYNC_START_DEDUPE_WINDOW_MS = 1500L
+        @Volatile
+        private var lastSuccessfulSyncStartElapsedRealtime: Long = 0L
+        @Volatile
+        private var lastSuccessfulSyncStartSource: String? = null
+        @Volatile
+        private var isServiceInstanceActive: Boolean = false
+        @Volatile
+        private var isServiceForegroundActive: Boolean = false
+
+        fun isReadyForPassiveLocalPlaybackSync(): Boolean {
+            return isServiceInstanceActive && isServiceForegroundActive
+        }
 
         fun createSyncIntent(context: Context, source: String): Intent {
             return Intent(context, AudioPlayerService::class.java).apply {
@@ -140,18 +277,50 @@ class AudioPlayerService : Service() {
             context: Context,
             source: String,
             forceForeground: Boolean = false
-        ) {
-            val intent = createSyncIntent(context, source)
+        ): Boolean {
+            val nowElapsedRealtime = SystemClock.elapsedRealtime()
             if (
-                shouldUseForegroundServiceStart(
-                    sdkInt = Build.VERSION.SDK_INT,
-                    forceForeground = forceForeground,
-                    shouldRunPlaybackServiceInForeground = PlayerManager.shouldRunPlaybackServiceInForeground()
+                shouldSkipRedundantSyncServiceStart(
+                    source = source,
+                    lastSuccessfulSource = lastSuccessfulSyncStartSource,
+                    lastSuccessfulStartElapsedRealtime = lastSuccessfulSyncStartElapsedRealtime,
+                    nowElapsedRealtime = nowElapsedRealtime,
+                    dedupeWindowMs = SYNC_START_DEDUPE_WINDOW_MS
                 )
             ) {
-                ContextCompat.startForegroundService(context, intent)
-            } else {
-                context.startService(intent)
+                NPLogger.d(
+                    "NERI-APS",
+                    "Skip redundant sync start: source=$source lastSource=$lastSuccessfulSyncStartSource"
+                )
+                return true
+            }
+            val intent = createSyncIntent(context, source)
+            val callerHasResumedUi = context.findActivityReadyForDirectServiceStart() != null
+            val shouldStartInForeground = shouldUseForegroundServiceStart(
+                sdkInt = Build.VERSION.SDK_INT,
+                forceForeground = forceForeground,
+                shouldRunPlaybackServiceInForeground = PlayerManager.shouldRunPlaybackServiceInForeground(),
+                callerHasResumedUi = callerHasResumedUi
+            )
+            return try {
+                if (shouldStartInForeground) {
+                    ContextCompat.startForegroundService(context, intent)
+                } else {
+                    context.startService(intent)
+                }
+                lastSuccessfulSyncStartElapsedRealtime = nowElapsedRealtime
+                lastSuccessfulSyncStartSource = source
+                true
+            } catch (error: IllegalStateException) {
+                if (!isServiceStartNotAllowedFailure(error)) {
+                    throw error
+                }
+                NPLogger.w(
+                    "NERI-APS",
+                    "Deferred audio service start: source=$source foreground=$shouldStartInForeground resumedUi=$callerHasResumedUi",
+                    error
+                )
+                false
             }
         }
     }
@@ -168,6 +337,7 @@ class AudioPlayerService : Service() {
     private var hasReceivedStartCommand = false
     private var isForegroundStarted = false
     private var lastNotificationSnapshot: PlaybackNotificationSnapshot? = null
+    private var lastMetadataSnapshot: PlaybackMetadataSnapshot? = null
 
     private fun shouldKeepServiceSticky(): Boolean {
         return PlayerManager.hasItems() && PlayerManager.shouldRunPlaybackServiceInForeground()
@@ -228,6 +398,7 @@ class AudioPlayerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isServiceInstanceActive = true
         NPLogger.d("NERI-APS", "onCreate begin ${buildStateSummary()}")
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
@@ -270,6 +441,11 @@ class AudioPlayerService : Service() {
             }
         }
         serviceScope.launch {
+            PlayerManager.playbackControlPlayingFlow.collect {
+                updateNotification()
+            }
+        }
+        serviceScope.launch {
             PlayerManager.playWhenReadyFlow.collect {
                 updatePlaybackState()
                 updateNotification()
@@ -282,9 +458,14 @@ class AudioPlayerService : Service() {
             }
         }
         serviceScope.launch {
-            PlayerManager.playbackPositionFlow.collect {
-                updatePlaybackState()
-            }
+            PlayerManager.playbackPositionFlow
+                .map { positionMs ->
+                    positionMs.coerceAtLeast(0L) / PLAYBACK_STATE_PROGRESS_BUCKET_MS
+                }
+                .distinctUntilChanged()
+                .collect {
+                    updatePlaybackState()
+                }
         }
         serviceScope.launch {
             PlayerManager.playbackSoundStateFlow.collect {
@@ -309,7 +490,17 @@ class AudioPlayerService : Service() {
                 }
             }
         }
-        registerReceiver(becomingNoisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+        val noisyIntentFilter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                becomingNoisyReceiver,
+                noisyIntentFilter,
+                RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(becomingNoisyReceiver, noisyIntentFilter)
+        }
 
         updateMetadata()
         updatePlaybackState(force = true)
@@ -380,8 +571,25 @@ class AudioPlayerService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                NPLogger.d("NERI-APS", "Handling ACTION_SYNC source=$startSource ${buildStateSummary()}")
-                updateAll()
+                if (
+                    shouldSkipFullSyncForLocalPlaybackAction(
+                        source = startSource,
+                        foregroundStarted = isForegroundStarted,
+                        hasItems = PlayerManager.hasItems(),
+                        hasCurrentSong = PlayerManager.currentSongFlow.value != null,
+                        hasLocalCurrentSong = PlayerManager.currentSongFlow.value?.let {
+                            LocalSongSupport.isLocalSong(it, this)
+                        } == true
+                    )
+                ) {
+                    NPLogger.d(
+                        "NERI-APS",
+                        "Skipping full ACTION_SYNC because active service already tracks local playback, source=$startSource"
+                    )
+                } else {
+                    NPLogger.d("NERI-APS", "Handling ACTION_SYNC source=$startSource ${buildStateSummary()}")
+                    updateAll()
+                }
             }
 
             ACTION_TOGGLE_FAV -> {
@@ -431,7 +639,7 @@ class AudioPlayerService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val isTransportActive = PlayerManager.isTransportActive()
+        val isPlaybackControlPlaying = PlayerManager.playbackControlPlayingFlow.value
         val song = PlayerManager.currentSongFlow.value
 
         val contentIntent = PendingIntent.getActivity(
@@ -481,9 +689,9 @@ class AudioPlayerService : Service() {
 
         builder.addAction(R.drawable.round_skip_previous_24, getString(R.string.player_previous), prevIntent)
         builder.addAction(
-            if (isTransportActive) R.drawable.round_pause_24 else R.drawable.round_play_arrow_24,
-            if (isTransportActive) getString(R.string.player_pause) else getString(R.string.player_play),
-            if (isTransportActive) pauseIntent else playIntent
+            if (isPlaybackControlPlaying) R.drawable.round_pause_24 else R.drawable.round_play_arrow_24,
+            if (isPlaybackControlPlaying) getString(R.string.player_pause) else getString(R.string.player_play),
+            if (isPlaybackControlPlaying) pauseIntent else playIntent
         )
         builder.addAction(favAction)
         builder.addAction(R.drawable.round_skip_next_24, getString(R.string.player_next), nextIntent)
@@ -602,9 +810,11 @@ class AudioPlayerService : Service() {
             song?.displayArtist() ?: ""
         }
         return PlaybackNotificationSnapshot(
+            songKey = song?.stableKey(),
             title = song?.displayName() ?: "NeriPlayer",
             text = text,
             isTransportActive = PlayerManager.isTransportActive(),
+            isPlaybackControlPlaying = PlayerManager.playbackControlPlayingFlow.value,
             isFavorite = isFavoriteSong(song),
             requiresInteractiveFavoriteConfirmation = requiresInteractiveFavoriteConfirmation(song),
             largeIconReady = currentLargeIcon != null,
@@ -625,6 +835,18 @@ class AudioPlayerService : Service() {
 
         val displayTitle = song?.displayName() ?: "NeriPlayer"
         val displayArtist = song?.displayArtist().orEmpty()
+        val snapshot = PlaybackMetadataSnapshot(
+            songKey = song?.stableKey(),
+            title = displayTitle,
+            artist = displayArtist,
+            durationMs = duration,
+            coverSource = coverSource,
+            largeIconReady = currentLargeIcon != null,
+        )
+        if (snapshot == lastMetadataSnapshot) {
+            return
+        }
+        lastMetadataSnapshot = snapshot
 
         val metadataBuilder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, displayTitle)
@@ -725,7 +947,7 @@ class AudioPlayerService : Service() {
                 val request = ImageRequest.Builder(appCtx)
                     .data(url)
                     .allowHardware(false)
-                    .size(320)
+                    .size(256)
                     .build()
                 val result = loader.execute(request)
                 val drawable = result.drawable ?: return@launch
@@ -785,6 +1007,8 @@ class AudioPlayerService : Service() {
             "NERI-APS",
             "onDestroy ${buildStateSummary()}"
         )
+        isServiceForegroundActive = false
+        isServiceInstanceActive = false
         unregisterReceiver(becomingNoisyReceiver)
         serviceScope.cancel()
         mediaSession.isActive = false
@@ -835,6 +1059,7 @@ class AudioPlayerService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
             isForegroundStarted = true
+            isServiceForegroundActive = true
             NPLogger.d("NERI-APS", "startForegroundImmediately success reason=$reason")
             true
         } catch (e: SecurityException) {
@@ -862,6 +1087,7 @@ class AudioPlayerService : Service() {
         NPLogger.w("NERI-APS", "stopForegroundIfStarted reason=$reason ${buildStateSummary()}")
         stopForeground(STOP_FOREGROUND_REMOVE)
         isForegroundStarted = false
+        isServiceForegroundActive = false
     }
 
     private fun NotificationPaddedIcon(

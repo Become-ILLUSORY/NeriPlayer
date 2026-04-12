@@ -23,18 +23,15 @@ package moe.ouom.neriplayer.core.di
  * Created: 2025/8/19
  */
 
-import android.annotation.SuppressLint
 import android.app.Application
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import moe.ouom.neriplayer.core.api.bili.BiliClient
 import moe.ouom.neriplayer.core.api.bili.BiliClientAudioDataSource
 import moe.ouom.neriplayer.core.api.bili.BiliPlaybackRepository
@@ -51,11 +48,17 @@ import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthAutoRefreshManager
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthRepository
 import moe.ouom.neriplayer.data.auth.youtube.YOUTUBE_MUSIC_ORIGIN
 import moe.ouom.neriplayer.data.history.PlayHistoryRepository
+import moe.ouom.neriplayer.data.playlist.usage.PlaylistUsageRepository
 import moe.ouom.neriplayer.listentogether.ListenTogetherApi
 import moe.ouom.neriplayer.listentogether.ListenTogetherSessionManager
 import moe.ouom.neriplayer.listentogether.ListenTogetherWebSocketClient
+import moe.ouom.neriplayer.data.settings.dataStore
+import moe.ouom.neriplayer.data.settings.persistBootstrapSettingsSnapshot
+import moe.ouom.neriplayer.data.settings.persistPlaybackPreferenceSnapshot
+import moe.ouom.neriplayer.data.settings.readBootstrapSettingsSnapshotSync
 import moe.ouom.neriplayer.data.settings.SettingsRepository
-import moe.ouom.neriplayer.data.playlist.usage.PlaylistUsageRepository
+import moe.ouom.neriplayer.data.settings.toBootstrapSettingsSnapshot
+import moe.ouom.neriplayer.data.settings.toPlaybackPreferenceSnapshot
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeInnertubeRequestHeaders
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubePageRequestHeaders
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeStreamRequestHeaders
@@ -67,6 +70,7 @@ import moe.ouom.neriplayer.data.platform.youtube.YouTubeReverseProxyRuntime
 import moe.ouom.neriplayer.util.DynamicProxySelector
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import kotlin.LazyThreadSafetyMode
 
 internal fun resolveInitialBypassProxy(
     currentValue: Boolean,
@@ -130,6 +134,13 @@ internal fun handleYouTubeAuthStateChanged(
     // 只移除旧请求引用，避免 auth 恢复成功时把当前播放请求自己取消掉
     clearPlaybackAuthBoundCaches(false)
     evictConnections()
+    warmYouTubePlaybackIfAuthorized(bundle, warmBootstrapAsync)
+}
+
+internal fun warmYouTubePlaybackIfAuthorized(
+    bundle: moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthBundle,
+    warmBootstrapAsync: () -> Unit
+) {
     if (bundle.hasLoginCookies()) {
         warmBootstrapAsync()
     }
@@ -162,12 +173,12 @@ object AppContainer {
     }
 
 
-    @SuppressLint("StaticFieldLeak")
-    lateinit var playHistoryRepo: PlayHistoryRepository
-        private set
-    @SuppressLint("StaticFieldLeak")
-    lateinit var playlistUsageRepo: PlaylistUsageRepository
-        private set
+    val playHistoryRepo by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        PlayHistoryRepository.getInstance(application)
+    }
+    val playlistUsageRepo by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        PlaylistUsageRepository(application)
+    }
 
 
     // 共享 OkHttpClient：受 DynamicProxySelector 管理
@@ -287,60 +298,20 @@ object AppContainer {
         startCookieObserver()
         startYouTubeAuthObserver()
         startSettingsObserver()
-        // 把 YouTube Music 的 bootstrap / Web PO 冷启动成本前移，减少首次播放等待
-        youtubeMusicPlaybackRepository.warmBootstrapAsync()
-        playHistoryRepo = PlayHistoryRepository.getInstance(app)
-        playlistUsageRepo = PlaylistUsageRepository(app)
+        warmYouTubePlaybackOnAppStart()
     }
 
     private fun primeProxySetting() {
-        DynamicProxySelector.bypassProxy = resolveInitialBypassProxy(
-            currentValue = DynamicProxySelector.bypassProxy
-        ) {
-            runBlocking {
-                settingsRepo.bypassProxyFlow.first()
-            }
-        }
-        val initialYouTubeReverseProxySettings = resolveInitialYouTubeReverseProxySettings(
-            currentEnabled = YouTubeReverseProxyRuntime.isEnabled(),
-            currentBaseUrl = YouTubeReverseProxyRuntime.baseUrl(),
-            loadEnabled = {
-                runBlocking {
-                    settingsRepo.youtubeReverseProxyEnabledFlow.first()
-                }
-            },
-            loadBaseUrl = {
-                runBlocking {
-                    settingsRepo.youtubeReverseProxyBaseUrlFlow.first()
-                }
-            }
-        )
+        val initialBootstrapSettings = readBootstrapSettingsSnapshotSync(application)
+        DynamicProxySelector.bypassProxy = initialBootstrapSettings.bypassProxy
         YouTubeReverseProxyRuntime.update(
-            enabled = initialYouTubeReverseProxySettings.enabled,
-            baseUrl = initialYouTubeReverseProxySettings.baseUrl
-        )
-
-        val initialManagedDownloadSettings = resolveInitialManagedDownloadSettings(
-            loadDirectoryUri = {
-                runBlocking {
-                    settingsRepo.downloadDirectoryUriFlow.first()
-                }
-            },
-            loadDirectoryLabel = {
-                runBlocking {
-                    settingsRepo.downloadDirectoryLabelFlow.first()
-                }
-            },
-            loadFileNameTemplate = {
-                runBlocking {
-                    settingsRepo.downloadFileNameTemplateFlow.first()
-                }
-            }
+            enabled = initialBootstrapSettings.youtubeReverseProxyEnabled,
+            baseUrl = initialBootstrapSettings.youtubeReverseProxyBaseUrl
         )
         ManagedDownloadStorage.primeSettings(
-            directoryUri = initialManagedDownloadSettings.directoryUri,
-            directoryLabel = initialManagedDownloadSettings.directoryLabel,
-            fileNameTemplate = initialManagedDownloadSettings.fileNameTemplate
+            directoryUri = initialBootstrapSettings.downloadDirectoryUri,
+            directoryLabel = initialBootstrapSettings.downloadDirectoryLabel,
+            fileNameTemplate = initialBootstrapSettings.downloadFileNameTemplate
         )
     }
 
@@ -371,6 +342,19 @@ object AppContainer {
     }
 
     private fun startSettingsObserver() {
+        application.dataStore.data
+            .onEach { preferences ->
+                persistBootstrapSettingsSnapshot(
+                    application,
+                    preferences.toBootstrapSettingsSnapshot()
+                )
+                persistPlaybackPreferenceSnapshot(
+                    application,
+                    preferences.toPlaybackPreferenceSnapshot()
+                )
+            }
+            .launchIn(scope)
+
         settingsRepo.bypassProxyFlow
             .onEach { enabled ->
                 DynamicProxySelector.bypassProxy = enabled
@@ -418,6 +402,13 @@ object AppContainer {
                 ManagedDownloadStorage.updateDownloadFileNameTemplate(template)
             }
             .launchIn(scope)
+    }
+
+    private fun warmYouTubePlaybackOnAppStart() {
+        warmYouTubePlaybackIfAuthorized(
+            bundle = youtubeAuthRepo.getAuthOnce().normalized(),
+            warmBootstrapAsync = youtubeMusicPlaybackRepository::warmBootstrapAsync
+        )
     }
 
     private fun isYouTubeHost(host: String): Boolean {

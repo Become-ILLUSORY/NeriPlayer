@@ -28,6 +28,7 @@ import android.os.Build
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -87,6 +88,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.roundToLong
+
+private const val LYRIC_TIME_SMOOTHING_DURATION_MS = 96
+private const val LYRIC_TIME_SMOOTHING_MAX_DELTA_MS = 240L
 
 @Stable
 data class LyricVisualSpec(
@@ -130,6 +135,18 @@ data class LyricEntry(
     val words: List<WordTiming>? = null
 )
 
+private val NeteaseYrcLineRegex = Regex("""\[\d+,\s*\d+]\(\d+,""")
+
+fun isNeteaseYrc(content: String): Boolean = content.contains(NeteaseYrcLineRegex)
+
+fun parseNeteaseLyricsAuto(content: String): List<LyricEntry> {
+    return if (isNeteaseYrc(content)) {
+        parseNeteaseYrc(content)
+    } else {
+        parseNeteaseLrc(content)
+    }
+}
+
 /**
  * 根据当前时间计算该行的高亮进度（0f..1f），基于字符数进行精确计算
  */
@@ -172,10 +189,52 @@ fun calculateLineProgress(line: LyricEntry, currentTimeMs: Long): Float {
 /** 找到当前时间所在的行索引 */
 fun findCurrentLineIndex(lines: List<LyricEntry>, currentTimeMs: Long): Int {
     if (lines.isEmpty()) return -1
-    for (i in lines.indices) {
-        if (currentTimeMs < lines[i].startTimeMs) return (i - 1).coerceAtLeast(0)
+    var low = 0
+    var high = lines.lastIndex
+    var result = 0
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (lines[mid].startTimeMs <= currentTimeMs) {
+            result = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
     }
-    return lines.lastIndex
+    return result
+}
+
+internal fun shouldSnapLyricTimeSmoothing(
+    displayedTimeMs: Long,
+    targetTimeMs: Long,
+    maxAnimatedDeltaMs: Long = LYRIC_TIME_SMOOTHING_MAX_DELTA_MS
+): Boolean {
+    val delta = targetTimeMs - displayedTimeMs
+    return delta < 0L || delta > maxAnimatedDeltaMs
+}
+
+@Composable
+private fun rememberSmoothedLyricTimeMs(
+    targetTimeMs: Long
+): Long {
+    val smoothedTime = remember { Animatable(targetTimeMs.toFloat()) }
+
+    LaunchedEffect(targetTimeMs) {
+        val displayedTimeMs = smoothedTime.value.roundToLong()
+        if (shouldSnapLyricTimeSmoothing(displayedTimeMs, targetTimeMs)) {
+            smoothedTime.snapTo(targetTimeMs.toFloat())
+        } else {
+            smoothedTime.animateTo(
+                targetValue = targetTimeMs.toFloat(),
+                animationSpec = tween(
+                    durationMillis = LYRIC_TIME_SMOOTHING_DURATION_MS,
+                    easing = LinearEasing
+                )
+            )
+        }
+    }
+
+    return smoothedTime.value.roundToLong()
 }
 
 /** 上下渐隐 */
@@ -220,9 +279,11 @@ fun AppleMusicLyric(
     var manualClearHoldIndex by remember(lyrics) { mutableStateOf<Int?>(null) }
     var isAutoScrolling by remember { mutableStateOf(false) }
     var lastUserInteracting by remember { mutableStateOf(false) }
+    val targetLyricTimeMs = (currentTimeMs + lyricOffsetMs).coerceAtLeast(0L)
+    val smoothedLyricTimeMs = rememberSmoothedLyricTimeMs(targetLyricTimeMs)
 
-    val currentIndex = remember(lyrics, currentTimeMs + lyricOffsetMs) {
-        findCurrentLineIndex(lyrics, currentTimeMs + lyricOffsetMs)
+    val currentIndex = remember(lyrics, smoothedLyricTimeMs) {
+        findCurrentLineIndex(lyrics, smoothedLyricTimeMs)
     }
 
     LaunchedEffect(currentIndex, lyrics.size) {
@@ -264,6 +325,17 @@ fun AppleMusicLyric(
             callback(line)
         }
     }
+    val translationMatchesByIndex = remember(lyrics, translatedLyrics) {
+        val safeTranslatedLyrics = translatedLyrics.orEmpty()
+        if (safeTranslatedLyrics.isEmpty()) {
+            emptyMap<Int, LyricEntry>()
+        } else {
+            matchTranslationsToLineIndices(
+                lines = lyrics,
+                translations = safeTranslatedLyrics
+            )
+        }
+    }
 
     BoxWithConstraints(
         modifier = modifier.fillMaxSize(),
@@ -281,7 +353,10 @@ fun AppleMusicLyric(
                 .fillMaxSize()
                 .verticalEdgeFade(fadeHeight = 72.dp)
         ) {
-            itemsIndexed(lyrics) { index, line ->
+            itemsIndexed(
+                items = lyrics,
+                key = { _, line -> "${line.startTimeMs}:${line.endTimeMs}:${line.text}" }
+            ) { index, line ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -359,7 +434,7 @@ fun AppleMusicLyric(
                         if (isActive) {
                             AppleMusicActiveLine(
                                 line = line,
-                                currentTimeMs = currentTimeMs + lyricOffsetMs,
+                                currentTimeMs = smoothedLyricTimeMs,
                                 activeColor = textColor,
                                 inactiveColor = textColor.copy(alpha = 0.5f),
                                 fontSize = fontSize,
@@ -407,19 +482,7 @@ fun AppleMusicLyric(
                         }
                     }
 
-                    val transText = translatedLyrics?.let { list ->
-                        if (list.isEmpty()) return@let null
-
-                        val targetTime = if (isActive) (currentTimeMs + lyricOffsetMs) else line.startTimeMs
-                        val matchedLine = list.lastOrNull { targetTime >= it.startTimeMs && targetTime < it.endTimeMs }
-                            ?: list.lastOrNull { targetTime >= it.startTimeMs }
-
-                        val tolerance = 1_500L
-                        val isTimeAligned = matchedLine != null &&
-                            matchedLine.startTimeMs >= line.startTimeMs - tolerance
-
-                        if (isTimeAligned) matchedLine?.text else null
-                    }
+                    val transText = translationMatchesByIndex[index]?.text
                     val shouldShowTranslation = (shouldUseClearText || isActive) && !transText.isNullOrBlank()
 
                     Crossfade(

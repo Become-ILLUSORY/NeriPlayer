@@ -149,11 +149,15 @@ import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.di.AppContainer
 import kotlinx.coroutines.DelicateCoroutinesApi
+import moe.ouom.neriplayer.core.download.countPendingDownloadTasks
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
+import moe.ouom.neriplayer.core.download.hasPendingDownloadTasks
+import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
 import moe.ouom.neriplayer.core.player.AudioDownloadManager
 import moe.ouom.neriplayer.core.player.PlayerManager
 import moe.ouom.neriplayer.data.local.playlist.system.FavoritesPlaylist
@@ -165,12 +169,13 @@ import moe.ouom.neriplayer.data.local.media.displayAlbum
 import moe.ouom.neriplayer.data.model.displayArtist
 import moe.ouom.neriplayer.data.model.displayCoverUrl
 import moe.ouom.neriplayer.data.model.displayName
+import moe.ouom.neriplayer.data.model.SongIdentity
 import moe.ouom.neriplayer.data.model.identity
 import moe.ouom.neriplayer.data.local.media.isLocalSong
 import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
-import moe.ouom.neriplayer.ui.component.bottomSheetDragBlocker
+import moe.ouom.neriplayer.ui.component.BatchDownloadManagerSheet
 import moe.ouom.neriplayer.ui.component.bottomSheetScrollGuard
 import moe.ouom.neriplayer.ui.component.LocalSongDetailsDialog
 import moe.ouom.neriplayer.ui.component.LocalSongSyncConfirmDialog
@@ -189,6 +194,11 @@ import org.burnoutcrew.reorderable.detectReorder
 import org.burnoutcrew.reorderable.rememberReorderableLazyListState
 import org.burnoutcrew.reorderable.reorderable
 import java.io.File
+
+private fun hasCachedLocalDownload(song: SongItem): Boolean {
+    return GlobalDownloadManager.hasDownloadedSongCached(song) ||
+        ManagedDownloadStorage.peekDownloadedAudio(song) != null
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class,
     DelicateCoroutinesApi::class
@@ -320,8 +330,15 @@ fun LocalPlaylistDetailScreen(
             val keyboardController = LocalSoftwareKeyboardController.current
             
             // 下载进度
-            val batchDownloadProgress by AudioDownloadManager.batchProgressFlow.collectAsState()
-            val downloadedSongs by GlobalDownloadManager.downloadedSongs.collectAsState()
+            val hasDownloadManagerEntryFlow = remember {
+                GlobalDownloadManager.downloadTasks
+                    .map(::hasPendingDownloadTasks)
+                    .distinctUntilChanged()
+            }
+            val hasDownloadManagerEntry by hasDownloadManagerEntryFlow.collectAsState(
+                initial = hasPendingDownloadTasks(GlobalDownloadManager.downloadTasks.collectAsState().value)
+            )
+            val downloadPresenceVersion by GlobalDownloadManager.downloadPresenceVersion.collectAsState()
 
             // Snackbar状态
             val snackbarHostState = remember { SnackbarHostState() }
@@ -416,19 +433,19 @@ fun LocalPlaylistDetailScreen(
                 mutableStateListOf<SongItem>().also { it.addAll(playlist.songs) }
             }
 
-            // 阻断 VM->UI 同步；同时用 pendingOrderKeys 兼容重排和批删
+            // 阻断 VM->UI 同步；同时用 pendingOrderIdentities 兼容重排和批删
             var blockSync by remember(playlistId) { mutableStateOf(false) }
-            var pendingOrderKeys by remember(playlistId) { mutableStateOf<List<String>?>(null) }
-            LaunchedEffect(playlist.songs, blockSync, pendingOrderKeys) {
-                val repoKeys = playlist.songs.map { it.stableKey() }
-                val wanted = pendingOrderKeys
+            var pendingOrderIdentities by remember(playlistId) { mutableStateOf<List<SongIdentity>?>(null) }
+            LaunchedEffect(playlist.songs, blockSync, pendingOrderIdentities) {
+                val repoIdentities = playlist.songs.map { it.identity() }
+                val wanted = pendingOrderIdentities
                 if (!blockSync) {
                     localSongs.clear()
                     localSongs.addAll(playlist.songs)
-                } else if (wanted != null && wanted == repoKeys) {
+                } else if (wanted != null && wanted == repoIdentities) {
                     localSongs.clear()
                     localSongs.addAll(playlist.songs)
-                    pendingOrderKeys = null
+                    pendingOrderIdentities = null
                     blockSync = false
                 }
             }
@@ -633,7 +650,7 @@ fun LocalPlaylistDetailScreen(
                 canDragOver = { _, over -> (over.key as? String) != headerKey },
                 onDragEnd = { _, _ ->
                     val newOrder = localSongs.map { it.identity() }
-                    pendingOrderKeys = localSongs.map { it.stableKey() }
+                    pendingOrderIdentities = newOrder
                     blockSync = true
                     scope.launch {
                         vm.reorderSongs(newOrder)
@@ -646,9 +663,28 @@ fun LocalPlaylistDetailScreen(
             var savedListOffset by rememberSaveable(playlistId) { mutableIntStateOf(0) }
             val hasRestoredScroll = rememberSaveable(playlistId) { mutableStateOf(false) }
             val listState = reorderState.listState
+            val baseQueue by remember {
+                derivedStateOf { localSongs.asReversed() }
+            }
+            val queueIndexBySongKey by remember {
+                derivedStateOf {
+                    buildMap(baseQueue.size) {
+                        baseQueue.forEachIndexed { index, song ->
+                            put(song.stableKey(), index)
+                        }
+                    }
+                }
+            }
+            val headerCover by remember(context) {
+                derivedStateOf {
+                    baseQueue.firstNotNullOfOrNull { song ->
+                        song.displayCoverUrl(context)?.takeIf(String::isNotBlank)
+                    }
+                }
+            }
             val displayedSongs by remember {
                 derivedStateOf {
-                    val base = localSongs.asReversed()
+                    val base = baseQueue
                     if (searchQuery.isBlank()) base
                     else base.filter { song ->
                         listOfNotNull(
@@ -708,7 +744,9 @@ fun LocalPlaylistDetailScreen(
 
             // 当前播放 & FAB
             val currentSong by PlayerManager.currentSongFlow.collectAsState()
-            val currentIndexInSource = localSongs.indexOfFirst { it.sameIdentityAs(currentSong) }
+            val currentIndexInSource = remember(localSongs, currentSong) {
+                localSongs.indexOfFirst { it.sameIdentityAs(currentSong) }
+            }
             val selectedSongsForAction by remember(localSongs, selectedKeysState.value) {
                 derivedStateOf {
                     localSongs.filter { it.stableKey() in selectedKeysState.value }
@@ -802,7 +840,7 @@ fun LocalPlaylistDetailScreen(
                                     }
                                 }) { Icon(Icons.Filled.Search, contentDescription = stringResource(R.string.cd_search_songs)) }
                                 
-                                if (batchDownloadProgress != null) {
+                                if (hasDownloadManagerEntry) {
                                     HapticIconButton(
                                         onClick = { showDownloadManager = true }
                                     ) {
@@ -920,6 +958,7 @@ fun LocalPlaylistDetailScreen(
                                     onClick = {
                                         if (selectedSongsForAction.isNotEmpty() && hasSelectedOnlineSongs) {
                                             val onlineSongs = selectedSongsForAction.filterNot { it.isLocalSong() }
+                                            showDownloadManager = true
                                             exitSelectionMode()
                                             GlobalDownloadManager.startBatchDownload(context, onlineSongs)
                                         }
@@ -985,13 +1024,13 @@ fun LocalPlaylistDetailScreen(
                                         .height(headerHeight)
                                 ) {
                                     // 头图取"展示顺序"的第一张有封面的
-                                    val headerContext = LocalContext.current
-                                    val baseQueue = localSongs.asReversed()
-                                    val headerCover =
-                                        baseQueue.firstOrNull { !it.displayCoverUrl(headerContext).isNullOrBlank() }
-                                            ?.displayCoverUrl(headerContext)
                                     AsyncImage(
-                                        model = offlineCachedImageRequest(headerContext, headerCover),
+                                        model = offlineCachedImageRequest(
+                                            context = context,
+                                            data = headerCover,
+                                            sizePx = 768,
+                                            allowHardware = false
+                                        ),
                                         contentDescription = playlist.name,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
@@ -1079,9 +1118,7 @@ fun LocalPlaylistDetailScreen(
                                                     if (selectionMode) {
                                                         toggleSelect(song)
                                                     } else {
-                                                        val baseQueue = localSongs.asReversed()
-                                                        val pos =
-                                                            baseQueue.indexOfFirst { it.sameIdentityAs(song) }
+                                                        val pos = queueIndexBySongKey[song.stableKey()] ?: -1
                                                         if (pos >= 0) onSongClick(baseQueue, pos)
                                                     }
                                                 },
@@ -1127,7 +1164,12 @@ fun LocalPlaylistDetailScreen(
                                             val displayCoverUrl = song.displayCoverUrl(itemContext)
                                             if (!displayCoverUrl.isNullOrBlank()) {
                                                 AsyncImage(
-                                                    model = offlineCachedImageRequest(itemContext, displayCoverUrl),
+                                                    model = offlineCachedImageRequest(
+                                                        context = itemContext,
+                                                        data = displayCoverUrl,
+                                                        sizePx = 192,
+                                                        allowHardware = false
+                                                    ),
                                                     contentDescription = null,
                                                     contentScale = ContentScale.Crop,
                                                     modifier = Modifier
@@ -1152,11 +1194,8 @@ fun LocalPlaylistDetailScreen(
                                                         style = MaterialTheme.typography.titleMedium
                                                     )
                                                     // 下载完成标志
-                                                    if (remember(downloadedSongs, song, itemContext) {
-                                                            AudioDownloadManager.hasLocalDownload(
-                                                                itemContext,
-                                                                song
-                                                            )
+                                                    if (remember(downloadPresenceVersion, song) {
+                                                            hasCachedLocalDownload(song)
                                                         }) {
                                                         Icon(
                                                             imageVector = Icons.Outlined.DownloadDone,
@@ -1369,13 +1408,14 @@ fun LocalPlaylistDetailScreen(
                                 val songsToRemove = localSongs.filter {
                                     it.stableKey() in selectedKeysState.value
                                 }
-                                val expected = localSongs
-                                    .filterNot { it.stableKey() in selectedKeysState.value }
-                                    .map { it.stableKey() }
-                                pendingOrderKeys = expected
+                                val expectedSongs = localSongs.filterNot { candidate ->
+                                    songsToRemove.any { it.sameIdentityAs(candidate) }
+                                }
+                                pendingOrderIdentities = expectedSongs.map { it.identity() }
                                 blockSync = true
 
-                                localSongs.removeAll { it.stableKey() in selectedKeysState.value }
+                                localSongs.clear()
+                                localSongs.addAll(expectedSongs)
                                 showDeleteMultiConfirm = false
                                 exitSelectionMode()
 
@@ -1493,152 +1533,30 @@ fun LocalPlaylistDetailScreen(
 
                 // 下载管理器
                 if (showDownloadManager) {
-                    ModalBottomSheet(
-                        onDismissRequest = { showDownloadManager = false },
-                        sheetGesturesEnabled = false
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .bottomSheetDragBlocker()
-                                .padding(20.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    stringResource(R.string.download_manager),
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-                                HapticIconButton(
-                                    onClick = { showDownloadManager = false }
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = stringResource(R.string.cd_close)
-                                    )
-                                }
-                            }
-                            
-                            Spacer(modifier = Modifier.height(16.dp))
-                            
-                            batchDownloadProgress?.let { progress ->
-                                // 下载进度显示
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                    )
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(16.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                stringResource(R.string.bili_download_progress_format, progress.completedSongs, progress.totalSongs),
-                                                style = MaterialTheme.typography.titleMedium
-                                            )
-                                            HapticTextButton(
-                                                onClick = {
-                                                    AudioDownloadManager.cancelDownload()
-                                                }
-                                            ) {
-                                                Text(stringResource(R.string.action_cancel), color = MaterialTheme.colorScheme.error)
-                                            }
-                                        }
-
-                                        if (progress.currentSong.isNotBlank()) {
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text(
-                                                stringResource(R.string.settings_downloading, progress.currentSong),
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        
-                                        // 总体进度条
-                                        Text(
-                                            stringResource(R.string.download_overall_progress, progress.percentage),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        val animatedOverallProgress by animateFloatAsState(
-                                            targetValue = (progress.percentage / 100f).coerceIn(0f, 1f),
-                                            animationSpec = spring(
-                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                stiffness = Spring.StiffnessMedium
-                                            ),
-                                            label = "overallProgress"
-                                        )
-                                        LinearProgressIndicator(
-                                            progress = { animatedOverallProgress },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        
-                                        // 单首歌曲进度条
-                                        progress.currentProgress?.let { currentProgress ->
-                                            Spacer(modifier = Modifier.height(12.dp))
-                                            Text(
-                                                stringResource(R.string.download_current_file_progress, currentProgress.percentage, currentProgress.speedBytesPerSec / 1024),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            val animatedCurrentProgress by animateFloatAsState(
-                                                targetValue = if (currentProgress.totalBytes > 0) {
-                                                    (currentProgress.bytesRead.toFloat() / currentProgress.totalBytes).coerceIn(0f, 1f)
-                                                } else 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                                    stiffness = Spring.StiffnessMedium
-                                                ),
-                                                label = "currentProgress"
-                                            )
-                                            LinearProgressIndicator(
-                                                progress = { animatedCurrentProgress },
-                                                modifier = Modifier.fillMaxWidth()
-                                            )
-                                        }
-                                    }
-                                }
-                            } ?: run {
-                                // 没有下载任务时的显示
-                                Column(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.Download,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(64.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Text(
-                                        stringResource(R.string.download_no_tasks),
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        stringResource(R.string.download_select_hint),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                            
-                            Spacer(modifier = Modifier.height(20.dp))
-                        }
+                    val batchDownloadProgress by AudioDownloadManager.batchProgressFlow.collectAsState()
+                    val downloadTasks by GlobalDownloadManager.downloadTasks.collectAsState()
+                    val pendingTaskCount = remember(downloadTasks) {
+                        countPendingDownloadTasks(downloadTasks)
                     }
+                    val progress = batchDownloadProgress
+                    BatchDownloadManagerSheet(
+                        batchDownloadProgress = progress,
+                        downloadTasks = downloadTasks,
+                        progressSummaryText = if (progress != null) {
+                            stringResource(
+                                R.string.bili_download_progress_format,
+                                progress.completedSongs,
+                                progress.totalSongs
+                            )
+                        } else {
+                            pluralStringResource(
+                                R.plurals.download_tasks_count,
+                                pendingTaskCount,
+                                pendingTaskCount
+                            )
+                        },
+                        onDismiss = { showDownloadManager = false }
+                    )
                 }
 
                 detailSong?.let { song ->

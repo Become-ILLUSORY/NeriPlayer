@@ -32,31 +32,32 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.data.auth.common.parseRawCookieText
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import org.json.JSONObject
 
 data class BiliAuthUiState(
-    val health: SavedCookieAuthHealth = SavedCookieAuthHealth()
+    val health: SavedCookieAuthHealth = SavedCookieAuthHealth(),
+    val hasSavedCookies: Boolean = false
 )
 
 sealed interface BiliAuthEvent {
     data class ShowSnack(val message: String) : BiliAuthEvent
     data class ShowCookies(val cookies: Map<String, String>) : BiliAuthEvent
     data object LoginSuccess : BiliAuthEvent
-    data class PromptReauth(val health: SavedCookieAuthHealth) : BiliAuthEvent
 }
 
 class BiliAuthViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = AppContainer.biliCookieRepo
-    private val client = AppContainer.biliClient
 
     private val _uiState = MutableStateFlow(
         BiliAuthUiState(
-            health = repo.getAuthHealth()
+            health = repo.getAuthHealth(),
+            hasSavedCookies = repo.getCookiesOnce().isNotEmpty()
         )
     )
     val uiState: StateFlow<BiliAuthUiState> = _uiState.asStateFlow()
@@ -64,54 +65,45 @@ class BiliAuthViewModel(app: Application) : AndroidViewModel(app) {
     private val _events = Channel<BiliAuthEvent>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
 
-    private var lastPromptSignature: String? = null
-
     init {
         viewModelScope.launch {
             repo.authHealthFlow.collect { health ->
-                _uiState.value = BiliAuthUiState(health = health)
-                if (!health.shouldPromptRelogin) {
-                    lastPromptSignature = null
+                _uiState.update { current ->
+                    current.copy(health = health)
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.cookieFlow.collect { cookies ->
+                _uiState.update { current ->
+                    current.copy(hasSavedCookies = cookies.isNotEmpty())
                 }
             }
         }
     }
 
-    fun refreshAuthHealth(
-        promptIfNeeded: Boolean = false,
-        forcePrompt: Boolean = false
-    ) {
+    fun refreshAuthHealth() {
         viewModelScope.launch(Dispatchers.IO) {
             repo.refreshHealth()
-            var health = repo.getAuthHealthOnce()
-            if (health.state != SavedCookieAuthState.Missing) {
-                health = health.copy(
-                    state = SavedCookieAuthState.Checking,
-                    checkedAt = System.currentTimeMillis()
-                )
-                _uiState.value = BiliAuthUiState(health = health)
-                health = validateCurrentAuth(repo.getAuthHealthOnce())
-            }
-
-            _uiState.value = BiliAuthUiState(health = health)
-            if (promptIfNeeded) {
-                emitPromptIfNeeded(health, forcePrompt)
+            _uiState.update { current ->
+                current.copy(health = repo.getAuthHealthOnce())
             }
         }
     }
 
+    fun clearCookies() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.clear()
+            _events.send(
+                BiliAuthEvent.ShowSnack(
+                    getApplication<Application>().getString(R.string.auth_cookie_cleared)
+                )
+            )
+        }
+    }
+
     fun importCookiesFromRaw(raw: String) {
-        val map = linkedMapOf<String, String>()
-        raw.split(';')
-            .map { it.trim() }
-            .filter { it.contains('=') }
-            .forEach {
-                val idx = it.indexOf('=')
-                val key = it.substring(0, idx).trim()
-                val value = it.substring(idx + 1).trim()
-                if (key.isNotBlank()) map[key] = value
-            }
-        importCookiesFromMap(map)
+        importCookiesFromMap(parseRawCookieText(raw))
     }
 
     fun importCookiesFromMap(map: Map<String, String>) {
@@ -155,42 +147,5 @@ class BiliAuthViewModel(app: Application) : AndroidViewModel(app) {
             }
             out
         }.getOrElse { emptyMap() }
-    }
-
-    private suspend fun validateCurrentAuth(localHealth: SavedCookieAuthHealth): SavedCookieAuthHealth {
-        val checkedAt = System.currentTimeMillis()
-        return when (client.validateLoginSession()) {
-            true -> localHealth.copy(
-                state = SavedCookieAuthState.Valid,
-                checkedAt = checkedAt
-            )
-            false -> localHealth.copy(
-                state = SavedCookieAuthState.Expired,
-                checkedAt = checkedAt
-            )
-            null -> localHealth.copy(checkedAt = checkedAt)
-        }
-    }
-
-    private suspend fun emitPromptIfNeeded(
-        health: SavedCookieAuthHealth,
-        forcePrompt: Boolean
-    ) {
-        if (!health.shouldPromptRelogin) {
-            lastPromptSignature = null
-            return
-        }
-
-        val promptSignature = buildString {
-            append(health.state.name)
-            append(':')
-            append(health.savedAt)
-        }
-        if (!forcePrompt && promptSignature == lastPromptSignature) {
-            return
-        }
-
-        lastPromptSignature = promptSignature
-        _events.send(BiliAuthEvent.PromptReauth(health))
     }
 }

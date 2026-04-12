@@ -24,20 +24,21 @@ package moe.ouom.neriplayer.ui.viewmodel.tab
  */
 
 import android.app.Application
-import android.os.Parcelable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.parcelize.Parcelize
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicHomeShelf
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthBundle
 import moe.ouom.neriplayer.ui.viewmodel.playlist.SongItem
 import moe.ouom.neriplayer.util.LanguageManager
 import moe.ouom.neriplayer.util.NPLogger
@@ -49,6 +50,7 @@ private const val HOME_SEARCH_HOT_KEYWORD = "热歌"
 private const val HOME_SEARCH_RADAR_KEYWORD = "私人雷达"
 private const val HOME_MAX_FAILURE_BEFORE_WARNING = 3
 private const val HOME_YT_MUSIC_PLAYLIST_LIMIT = 24
+private const val HOME_INITIAL_LOAD_DEFER_MS = 250L
 
 private class ApiCodeException(val code: Int) : IllegalStateException("api_code=$code")
 private fun shouldFallbackRecommend(code: Int): Boolean = code == 301 || code == 50000005
@@ -60,7 +62,7 @@ data class HomeSectionState<T>(
 )
 
 data class HomeUiState(
-    val playlists: HomeSectionState<NeteasePlaylist> = HomeSectionState(),
+    val playlists: HomeSectionState<PlaylistSummary> = HomeSectionState(),
     val hotSongs: HomeSectionState<SongItem> = HomeSectionState(),
     val radarSongs: HomeSectionState<SongItem> = HomeSectionState(),
     val ytMusicPlaylists: HomeSectionState<YouTubeMusicPlaylist> = HomeSectionState(),
@@ -69,28 +71,11 @@ data class HomeUiState(
     val internationalizationEnabled: Boolean = false
 )
 
-/** UI 使用的精简数据模型 */
-@Parcelize
-data class NeteasePlaylist(
-    val id: Long,
-    val name: String,
-    val picUrl: String,
-    val playCount: Long,
-    val trackCount: Int
-) : Parcelable
-
-@Parcelize
-data class NeteaseAlbum(
-    val id: Long,
-    val name: String,
-    val picUrl: String,
-    val size: Int
-) : Parcelable
-
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = AppContainer.neteaseCookieRepo
     private val client = AppContainer.neteaseClient
+    private val youtubeAuthRepo = AppContainer.youtubeAuthRepo
 
     private val _uiState = MutableStateFlow(
         HomeUiState(
@@ -107,10 +92,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private var ytMusicPlaylistJob: Job? = null
     private var ytMusicHomeFeedJob: Job? = null
     private var hasRecommendLogin = false
+    private var homeRecommendationsBootstrapped = false
+    private var lastYouTubeAuthFingerprint: String? = null
 
     private fun localizedAppContext() = LanguageManager.applyLanguage(getApplication())
 
     init {
+        val initialCookies = repo.getCookiesOnce().toMutableMap().apply {
+            putIfAbsent("os", "pc")
+        }
+        hasRecommendLogin = !initialCookies["MUSIC_U"].isNullOrBlank()
+        lastYouTubeAuthFingerprint = buildYouTubeAuthFingerprint(youtubeAuthRepo.getAuthOnce())
+        _uiState.value = _uiState.value.copy(hasLogin = hasRecommendLogin)
+
         // 观察国际化设置变化，切换推荐源
         viewModelScope.launch {
             AppContainer.settingsRepo.internationalizationEnabledFlow.collect { enabled ->
@@ -122,9 +116,31 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        viewModelScope.launch {
+            AppContainer.youtubeAuthRepo.authFlow.drop(1).collect { bundle ->
+                val nextFingerprint = buildYouTubeAuthFingerprint(bundle)
+                if (nextFingerprint == lastYouTubeAuthFingerprint) {
+                    return@collect
+                }
+                lastYouTubeAuthFingerprint = nextFingerprint
+                if (!_uiState.value.internationalizationEnabled) {
+                    return@collect
+                }
+                if (!bundle.hasLoginCookies()) {
+                    _uiState.value = _uiState.value.copy(
+                        ytMusicPlaylists = HomeSectionState(),
+                        ytMusicHomeShelves = HomeSectionState()
+                    )
+                    return@collect
+                }
+                refreshYtMusicPlaylists()
+                refreshYtMusicHomeFeed()
+            }
+        }
+
         // 登录后自动刷新首页推荐歌单
         viewModelScope.launch {
-            repo.cookieFlow.collect { raw ->
+            repo.cookieFlow.drop(1).collect { raw ->
                 val cookies = raw.toMutableMap()
                 if (!cookies.containsKey("os")) cookies["os"] = "pc"
                 NPLogger.d(TAG, "cookieFlow updated: keys=${cookies.keys.joinToString()}")
@@ -133,14 +149,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 hasRecommendLogin = nextHasLogin
                 if (loginChanged) {
                     _uiState.value = _uiState.value.copy(hasLogin = nextHasLogin)
+                    refreshRecommend()
                 }
-                refreshRecommend()
-                if (hasRecommendLogin) {
+                if (!homeRecommendationsBootstrapped) {
+                    homeRecommendationsBootstrapped = true
                     loadHomeRecommendations(force = true)
                 }
             }
         }
-        loadHomeRecommendations(force = true)
+        viewModelScope.launch {
+            delay(HOME_INITIAL_LOAD_DEFER_MS)
+            refreshRecommend()
+            if (!homeRecommendationsBootstrapped) {
+                homeRecommendationsBootstrapped = true
+                loadHomeRecommendations(force = true)
+            }
+        }
     }
 
     /** 拉首页推荐歌单 */
@@ -156,13 +180,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     client.getRecommendedPlaylists(limit = 30, usePersistedCookies = hasRecommendLogin)
                 }
                 try {
-                    parseRecommend(raw)
+                    parseRecommendOnWorker(raw)
                 } catch (e: ApiCodeException) {
                     if (hasRecommendLogin && shouldFallbackRecommend(e.code)) {
                         val fallbackRaw = withContext(Dispatchers.IO) {
                             client.getRecommendedPlaylists(limit = 30, usePersistedCookies = false)
                         }
-                        parseRecommend(fallbackRaw)
+                        parseRecommendOnWorker(fallbackRaw)
                     } else {
                         throw e
                     }
@@ -220,7 +244,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         usePersistedCookies = false
                     )
                 }
-                parseSongs(raw)
+                parseSongsOnWorker(raw)
             }) {
                 is RetryLoadResult.Success -> {
                     _uiState.value = _uiState.value.copy(
@@ -256,7 +280,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         usePersistedCookies = false
                     )
                 }
-                parseSongs(raw)
+                parseSongsOnWorker(raw)
             }) {
                 is RetryLoadResult.Success -> {
                     _uiState.value = _uiState.value.copy(
@@ -380,8 +404,29 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun parseRecommend(raw: String): List<NeteasePlaylist> {
-        val result = mutableListOf<NeteasePlaylist>()
+    private suspend fun parseRecommendOnWorker(raw: String): List<PlaylistSummary> =
+        withContext(Dispatchers.Default) {
+            parseRecommend(raw)
+        }
+
+    private suspend fun parseSongsOnWorker(raw: String): List<SongItem> =
+        withContext(Dispatchers.Default) {
+            parseSongs(raw)
+        }
+
+    private fun buildYouTubeAuthFingerprint(bundle: YouTubeAuthBundle): String {
+        val normalized = bundle.normalized()
+        return buildString {
+            append(normalized.cookieHeader)
+            append('|')
+            append(normalized.authorization)
+            append('|')
+            append(normalized.xGoogAuthUser)
+        }
+    }
+
+    private fun parseRecommend(raw: String): List<PlaylistSummary> {
+        val result = mutableListOf<PlaylistSummary>()
         val root = JSONObject(raw)
 
         val code = root.optInt("code", -1)
@@ -401,7 +446,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
             if (id != 0L && name.isNotBlank() && picUrl.isNotBlank()) {
                 result.add(
-                    NeteasePlaylist(
+                    PlaylistSummary(
                         id = id,
                         name = name,
                         picUrl = picUrl,

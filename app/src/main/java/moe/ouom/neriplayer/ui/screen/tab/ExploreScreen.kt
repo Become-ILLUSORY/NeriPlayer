@@ -109,6 +109,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.bili.BiliClient
@@ -120,27 +121,30 @@ import moe.ouom.neriplayer.data.local.media.displayAlbum
 import moe.ouom.neriplayer.data.model.displayArtist
 import moe.ouom.neriplayer.data.model.displayCoverUrl
 import moe.ouom.neriplayer.data.model.displayName
+import moe.ouom.neriplayer.data.playlist.favorite.FavoritePlaylistRepository
 import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.component.bottomSheetScrollGuard
 import moe.ouom.neriplayer.ui.viewmodel.playlist.SongItem
 import moe.ouom.neriplayer.ui.viewmodel.tab.ExploreUiState
 import moe.ouom.neriplayer.ui.viewmodel.tab.ExploreViewModel
-import moe.ouom.neriplayer.ui.viewmodel.tab.NeteasePlaylist
+import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.SearchSource
 import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeMusicPlaylist
 import moe.ouom.neriplayer.util.HapticIconButton
 import moe.ouom.neriplayer.util.HapticTextButton
 import moe.ouom.neriplayer.util.NPLogger
+import moe.ouom.neriplayer.util.fastScrollableImageRequest
 import moe.ouom.neriplayer.util.formatDuration
-import moe.ouom.neriplayer.util.offlineCachedImageRequest
 import moe.ouom.neriplayer.util.performHapticFeedback
+
+private const val SEARCH_INPUT_DEBOUNCE_MS = 300L
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 @Suppress("AssignedValueIsNeverRead")
 fun ExploreScreen(
     gridState: LazyGridState,
-    onPlay: (NeteasePlaylist) -> Unit,
+    onPlay: (PlaylistSummary) -> Unit,
     onYouTubeMusicPlaylistClick: (YouTubeMusicPlaylist) -> Unit = {},
     onSongClick: (List<SongItem>, Int) -> Unit = { _, _ -> },
     onPlayParts: (BiliClient.VideoBasicInfo, Int, String) -> Unit = { _, _, _ -> }
@@ -159,6 +163,11 @@ fun ExploreScreen(
 
     val repo = remember(context) { LocalPlaylistRepository.getInstance(context) }
     val allLocalPlaylists by repo.playlists.collectAsState(initial = emptyList())
+    val favoriteRepo = remember(context) { FavoritePlaylistRepository.getInstance(context) }
+    val favorites by favoriteRepo.favorites.collectAsState()
+    val favoriteKeys = remember(favorites) {
+        favorites.mapTo(mutableSetOf()) { "${it.source}:${it.id}" }
+    }
 
     var showPartsSheet by remember { mutableStateOf(false) }
     var partsInfo by remember { mutableStateOf<BiliClient.VideoBasicInfo?>(null) }
@@ -223,7 +232,6 @@ fun ExploreScreen(
             ?: return@LaunchedEffect
         if (ui.selectedSearchSource != currentSource) {
             vm.setSearchSource(currentSource)
-            if (searchQuery.isNotEmpty()) vm.search(searchQuery)
         }
         if (currentSource == SearchSource.YOUTUBE_MUSIC && ui.ytMusicPlaylists.isEmpty()) {
             vm.loadYtMusicPlaylists()
@@ -261,6 +269,15 @@ fun ExploreScreen(
         }
     }
 
+    LaunchedEffect(searchQuery, ui.selectedSearchSource) {
+        if (searchQuery.isBlank()) {
+            vm.search("")
+            return@LaunchedEffect
+        }
+        delay(SEARCH_INPUT_DEBOUNCE_MS)
+        vm.search(searchQuery)
+    }
+
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
@@ -289,7 +306,6 @@ fun ExploreScreen(
                         value = searchQuery,
                         onValueChange = {
                             searchQuery = it
-                            vm.search(searchQuery)
                         },
                         label = { Text(stringResource(R.string.search_keyword)) },
                         leadingIcon = { Icon(Icons.Default.Search, "Search") },
@@ -368,7 +384,18 @@ fun ExploreScreen(
                                     bottom = 16.dp + miniPlayerHeight
                                 )
                             ) {
-                                itemsIndexed(ui.searchResults) { index, song ->
+                                itemsIndexed(
+                                    items = ui.searchResults,
+                                    key = { _, song ->
+                                        listOfNotNull(
+                                            song.channelId,
+                                            song.audioId,
+                                            song.subAudioId,
+                                            song.mediaUri,
+                                            song.id.toString()
+                                        ).joinToString("|")
+                                    }
+                                ) { index, song ->
                                     SongRow(index + 1, song) {
                                         if (song.album == PlayerManager.BILI_SOURCE_TAG) {
                                             scope.launch {
@@ -401,6 +428,7 @@ fun ExploreScreen(
                                 ui = ui,
                                 tagKeys = tagKeys,
                                 tagLabels = tagLabels,
+                                favoriteKeys = favoriteKeys,
                                 vm = vm,
                                 onPlay = onPlay,
                                 tagChipSelectedAlpha = tagChipSelectedAlpha,
@@ -662,8 +690,9 @@ private fun NeteaseDefaultContent(
     ui: ExploreUiState,
     tagKeys: List<String>,
     tagLabels: List<String>,
+    favoriteKeys: Set<String>,
     vm: ExploreViewModel,
-    onPlay: (NeteasePlaylist) -> Unit,
+    onPlay: (PlaylistSummary) -> Unit,
     tagChipSelectedAlpha: Float,
     tagChipUnselectedAlpha: Float,
     tagChipBorderAlpha: Float
@@ -724,6 +753,7 @@ private fun NeteaseDefaultContent(
             items(items = ui.playlists, key = { it.id }) { playlist ->
                 PlaylistCard(
                     playlist = playlist,
+                    isFavorite = favoriteKeys.contains("netease:${playlist.id}"),
                     onClick = { onPlay(playlist) }
                 )
             }
@@ -825,7 +855,7 @@ private fun SongRow(
 
         if (!coverUrl.isNullOrBlank()) {
             AsyncImage(
-                model = offlineCachedImageRequest(context, coverUrl),
+                model = fastScrollableImageRequest(context, coverUrl, sizePx = 128),
                 contentDescription = song.displayName(),
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -943,16 +973,14 @@ private fun YtMusicExploreCard(
     playlist: YouTubeMusicPlaylist,
     onClick: () -> Unit
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = coil.request.ImageRequest.Builder(LocalContext.current)
-                .data(playlist.coverUrl)
-                .crossfade(true)
-                .build(),
+            model = fastScrollableImageRequest(context, playlist.coverUrl, sizePx = 384),
             contentDescription = playlist.title,
             contentScale = ContentScale.Crop,
             modifier = Modifier

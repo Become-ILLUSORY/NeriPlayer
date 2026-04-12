@@ -1,26 +1,18 @@
 @file:Suppress("UnstableApiUsage")
 
 import com.android.build.api.variant.FilterConfiguration
-import org.gradle.api.Project
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
+import org.gradle.api.tasks.testing.Test
 import java.util.UUID
 
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
+    id("build-logic.android.application")
+    id("build-logic.android.compose")
     alias(libs.plugins.kotlin.serialization)
     id("kotlin-parcelize")
 }
 
 android {
     namespace = "moe.ouom.neriplayer"
-    compileSdk = 36
-
     val buildUUID = UUID.randomUUID()
     val buildAllReleaseAbis = (project.findProperty("buildAllReleaseAbis") as String?)?.toBoolean() == true
     val defaultReleaseAbiFilters = listOf("arm64-v8a")
@@ -55,10 +47,6 @@ android {
 
     defaultConfig {
         applicationId = "moe.ouom.neriplayer"
-        minSdk = 28
-        targetSdk = 36
-        versionCode = getBuildVersionCode()
-        versionName = getBuildVersionName(project)
 
         buildConfigField("String", "BUILD_UUID", "\"${buildUUID}\"")
         buildConfigField("String", "TAG", "\"[NeriPlayer]\"")
@@ -69,6 +57,19 @@ android {
 
         renderscriptTargetApi = 31
         renderscriptSupportModeEnabled = true
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf(
+                    "-fexceptions",
+                    "-frtti"
+                )
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
+                )
+            }
+        }
     }
 
     buildTypes {
@@ -95,26 +96,30 @@ android {
             )
         }
     }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+    buildFeatures {
+        buildConfig = true
     }
 
-    kotlin {
-        compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
-    buildFeatures {
-        compose = true
-        buildConfig = true
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     packaging {
         dex {
             // minSdk 28 后 AGP 默认会把 dex 直接存储，恢复 legacy packaging 可显著降低 APK 体积
             useLegacyPackaging = true
+        }
+        resources {
+            // Compose instrumentation 依赖 kotlinx.coroutines 的 ServiceLoader，
+            // androidTest APK 需要合并同名 service 文件，避免只保留单个实现
+            merges += "META-INF/services/*"
         }
     }
 
@@ -135,36 +140,33 @@ android {
 
 }
 
-fun getBuildVersionName(project: Project): String {
-    return "${getShortGitRevision()}.${getCurrentDate(project)}"
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    exclude("**/com/mocharealm/accompanist/lyrics/ui/utils/String.kt")
 }
 
-private fun getCurrentDate(project: Project): String {
-    val override = project.findProperty("buildVersionTimestamp") as String?
-    if (!override.isNullOrBlank()) {
-        return override
-    }
-
-    val sdf = SimpleDateFormat("MMddHHmm", Locale.ENGLISH)
-    sdf.timeZone = TimeZone.getTimeZone("Asia/Taipei")
-    return sdf.format(Date())
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "runNeteaseSmoke",
+        System.getProperty("runNeteaseSmoke") ?: "false"
+    )
+    systemProperty(
+        "runYouTubePlaybackSmoke",
+        System.getProperty("runYouTubePlaybackSmoke") ?: "false"
+    )
+    systemProperty(
+        "youtubeSmokeVideoId",
+        System.getProperty("youtubeSmokeVideoId") ?: ""
+    )
+    systemProperty(
+        "youtubeSmokeForceRefresh",
+        System.getProperty("youtubeSmokeForceRefresh") ?: "false"
+    )
+    systemProperty(
+        "youtubeSmokeCookieFile",
+        System.getProperty("youtubeSmokeCookieFile") ?: ""
+    )
 }
 
-
-private fun getShortGitRevision(): String {
-    val command = "git rev-parse --short HEAD"
-    val processBuilder = ProcessBuilder(*command.split(" ").toTypedArray())
-    val process = processBuilder.start()
-
-    val output = process.inputStream.bufferedReader().use { it.readText() }
-    val exitCode = process.waitFor()
-
-    return if (exitCode == 0) {
-        output.trim()
-    } else {
-        "no_commit"
-    }
-}
 
 android.applicationVariants.all {
     outputs.all {
@@ -181,15 +183,6 @@ android.applicationVariants.all {
     }
 }
 
-fun getBuildVersionCode(): Int {
-    val appVerCode: Int by lazy {
-        val versionCode = SimpleDateFormat("yyMMddHH", Locale.ENGLISH).format(Date())
-        println("versionCode: $versionCode")
-        versionCode.toInt()
-    }
-    return appVerCode
-}
-
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -203,6 +196,7 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.androidx.foundation.layout)
     debugImplementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.test.manifest)
     implementation(libs.compose.material3)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -213,8 +207,13 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     testImplementation(libs.mockito.core)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.kotlinx.coroutines.android)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
     implementation(libs.androidx.animation)
     implementation(libs.accompanist.navigation.animation)
     implementation(libs.androidx.datastore.preferences)
@@ -223,8 +222,12 @@ dependencies {
     implementation(libs.newpipe.extractor)
     implementation(libs.okhttp)
 
+    implementation(project(":accompanist-lyrics-core"))
+    implementation(project(":accompanist-lyrics-ui"))
+
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.serialization.protobuf)
+    implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)
 
     // Media3
@@ -255,6 +258,10 @@ dependencies {
     // WorkManager - 后台同步
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.javascriptengine)
+
+
+
+    implementation(libs.androidx.webkit)
 
     // 取主题色
     implementation(libs.androidx.palette.ktx)

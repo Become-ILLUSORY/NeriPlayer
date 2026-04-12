@@ -33,7 +33,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -55,21 +54,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.activity.NeteaseWebLoginActivity
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
-import moe.ouom.neriplayer.data.auth.netease.NETEASE_AUTH_STALE_AFTER_MS
 import moe.ouom.neriplayer.ui.component.bottomSheetDragBlocker
 import moe.ouom.neriplayer.ui.screen.tab.settings.component.InlineMessage
 import moe.ouom.neriplayer.ui.viewmodel.debug.NeteaseAuthViewModel
 import moe.ouom.neriplayer.util.HapticButton
 import moe.ouom.neriplayer.util.HapticTextButton
-import moe.ouom.neriplayer.util.convertTimestampToDate
 import org.json.JSONObject
 
 @Composable
@@ -86,12 +80,29 @@ internal fun SettingsNeteaseAuthDialogs(
     showCookieDialog: Boolean,
     cookieText: String,
     onDismissCookieDialog: () -> Unit,
-    showReauthDialog: Boolean,
-    reauthHealth: SavedCookieAuthHealth?,
-    onDismissReauthDialog: () -> Unit,
-    onOpenSheetAtTab: (Int) -> Unit
+    showSavedCookieDialog: Boolean = false,
+    onDismissSavedCookieDialog: () -> Unit = {},
+    onOpenSheetAtTab: (Int) -> Unit = {},
+    onLogout: (() -> Unit)? = null,
+    onBrowserLogin: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+
+    if (showSavedCookieDialog) {
+        SavedCookieActionDialog(
+            title = stringResource(R.string.settings_netease_saved_cookie_title),
+            message = stringResource(R.string.settings_netease_saved_cookie_message),
+            onDismiss = onDismissSavedCookieDialog,
+            onContinueLogin = {
+                onDismissSavedCookieDialog()
+                onOpenSheetAtTab(0)
+            },
+            onLogout = {
+                onDismissSavedCookieDialog()
+                onLogout?.invoke()
+            }
+        )
+    }
 
     if (showConfirmDialog) {
         AlertDialog(
@@ -125,15 +136,27 @@ internal fun SettingsNeteaseAuthDialogs(
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab) }
         var rawCookie by remember { mutableStateOf("") }
-        val webLoginLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            if (result.resultCode == android.app.Activity.RESULT_OK) {
-                val json = result.data?.getStringExtra(NeteaseWebLoginActivity.RESULT_COOKIE) ?: "{}"
-                vm.importCookiesFromMap(parseCookieMap(json))
-            } else {
-                onInlineMsgChange(context.getString(R.string.settings_cookie_cancelled))
+        val launchBrowserLogin: () -> Unit = onBrowserLogin?.let { injectedBrowserLogin ->
+            {
+                onInlineMsgChange(null)
+                injectedBrowserLogin()
             }
+        } ?: run {
+            val webLoginLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult()
+            ) { result ->
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    val json = result.data?.getStringExtra(NeteaseWebLoginActivity.RESULT_COOKIE) ?: "{}"
+                    vm.importCookiesFromMap(parseCookieMap(json))
+                } else {
+                    onInlineMsgChange(context.getString(R.string.settings_cookie_cancelled))
+                }
+            }
+            val defaultBrowserLogin: () -> Unit = {
+                onInlineMsgChange(null)
+                webLoginLauncher.launch(Intent(context, NeteaseWebLoginActivity::class.java))
+            }
+            defaultBrowserLogin
         }
 
         ModalBottomSheet(
@@ -193,12 +216,7 @@ internal fun SettingsNeteaseAuthDialogs(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(Modifier.height(12.dp))
-                            HapticButton(
-                                onClick = {
-                                    onInlineMsgChange(null)
-                                    webLoginLauncher.launch(Intent(context, NeteaseWebLoginActivity::class.java))
-                                }
-                            ) {
+                            HapticButton(onClick = launchBrowserLogin) {
                                 Text(stringResource(R.string.login_start_browser))
                             }
                         }
@@ -238,67 +256,6 @@ internal fun SettingsNeteaseAuthDialogs(
             title = stringResource(R.string.login_success),
             cookieText = cookieText,
             onDismiss = onDismissCookieDialog
-        )
-    }
-
-    reauthHealth?.takeIf { showReauthDialog }?.let { health ->
-        val title = when (health.state) {
-            SavedCookieAuthState.Missing -> stringResource(R.string.settings_netease_reauth_required_title)
-            SavedCookieAuthState.Expired -> stringResource(R.string.settings_netease_reauth_expired_title)
-            SavedCookieAuthState.Stale -> stringResource(R.string.settings_netease_reauth_stale_title)
-            SavedCookieAuthState.Valid,
-            SavedCookieAuthState.Checking -> stringResource(R.string.settings_netease)
-        }
-        val message = when (health.state) {
-            SavedCookieAuthState.Missing -> stringResource(R.string.settings_netease_reauth_required_message)
-            SavedCookieAuthState.Expired -> stringResource(R.string.settings_netease_reauth_expired_message)
-            SavedCookieAuthState.Stale -> {
-                val savedAtLabel = health.savedAt
-                    .takeIf { it > 0L }
-                    ?.let(::convertTimestampToDate)
-                    ?: stringResource(R.string.settings_netease_reauth_unknown_time)
-                pluralStringResource(
-                    R.plurals.settings_netease_reauth_stale_message,
-                    (NETEASE_AUTH_STALE_AFTER_MS / (24L * 60L * 60L * 1000L)).toInt(),
-                    (NETEASE_AUTH_STALE_AFTER_MS / (24L * 60L * 60L * 1000L)).toInt(),
-                    savedAtLabel
-                )
-            }
-            SavedCookieAuthState.Valid,
-            SavedCookieAuthState.Checking -> ""
-        }
-
-        AlertDialog(
-            onDismissRequest = onDismissReauthDialog,
-            title = { Text(title) },
-            text = { Text(message) },
-            confirmButton = {
-                HapticTextButton(
-                    onClick = {
-                        onDismissReauthDialog()
-                        onInlineMsgChange(null)
-                        onOpenSheetAtTab(0)
-                    }
-                ) {
-                    Text(stringResource(R.string.settings_netease_reauth_action_login))
-                }
-            },
-            dismissButton = {
-                Row {
-                    HapticTextButton(
-                        onClick = {
-                            onDismissReauthDialog()
-                            onInlineMsgChange(null)
-                            onOpenSheetAtTab(1)
-                        }
-                    ) {
-                        Text(stringResource(R.string.settings_netease_reauth_action_import))
-                    }
-                    HapticTextButton(onClick = onDismissReauthDialog) {
-                        Text(stringResource(R.string.action_later))
-                    }
-                }
-            }
         )
     }
 }

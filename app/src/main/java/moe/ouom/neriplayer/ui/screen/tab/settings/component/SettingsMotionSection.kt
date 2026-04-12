@@ -59,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlin.math.absoluteValue
@@ -70,6 +71,8 @@ internal fun SettingsMotionSection(
     expanded: Boolean,
     arrowRotation: Float,
     onExpandedChange: (Boolean) -> Unit,
+    advancedLyricsEnabled: Boolean,
+    onAdvancedLyricsEnabledChange: (Boolean) -> Unit,
     advancedBlurEnabled: Boolean,
     onAdvancedBlurEnabledChange: (Boolean) -> Unit,
     nowPlayingAudioReactiveEnabled: Boolean,
@@ -161,6 +164,25 @@ internal fun SettingsMotionSection(
                     }
                 }
             }
+
+            MotionSwitchItem(
+                title = stringResource(R.string.settings_advanced_lyrics),
+                description = stringResource(R.string.settings_advanced_lyrics_desc),
+                disabledSuffix = null,
+                checked = advancedLyricsEnabled,
+                enabled = true,
+                alpha = 1f,
+                icon = {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_lyrics),
+                        contentDescription = stringResource(R.string.settings_advanced_lyrics),
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                onToggle = { onAdvancedLyricsEnabledChange(!advancedLyricsEnabled) },
+                onCheckedChange = onAdvancedLyricsEnabledChange
+            )
 
             MotionSwitchItem(
                 title = stringResource(R.string.settings_advanced_blur),

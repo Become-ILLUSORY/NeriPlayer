@@ -1,15 +1,32 @@
 package moe.ouom.neriplayer.data
 
-import moe.ouom.neriplayer.data.auth.bili.BILI_AUTH_STALE_AFTER_MS
 import moe.ouom.neriplayer.data.auth.bili.BiliAuthBundle
 import moe.ouom.neriplayer.data.auth.bili.evaluateBiliAuthHealth
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BiliAuthRepositoryTest {
+
+    @Test
+    fun biliAuthBundle_jsonRoundTripDropsBlankKeysAndKeepsSavedAt() {
+        val original = BiliAuthBundle(
+            cookies = linkedMapOf(
+                "SESSDATA" to "sess-cookie",
+                "" to "ignored",
+                "bili_jct" to "csrf-token"
+            ),
+            savedAt = 123L
+        )
+
+        val restored = BiliAuthBundle.fromJson(original.toJson())
+
+        assertEquals("sess-cookie", restored.cookies["SESSDATA"])
+        assertEquals("csrf-token", restored.cookies["bili_jct"])
+        assertFalse(restored.cookies.containsKey(""))
+        assertEquals(123L, restored.savedAt)
+    }
 
     @Test
     fun evaluateBiliAuthHealth_returnsMissingWithoutKnownCookies() {
@@ -39,17 +56,17 @@ class BiliAuthRepositoryTest {
     }
 
     @Test
-    fun evaluateBiliAuthHealth_returnsStaleForOldCookie() {
+    fun evaluateBiliAuthHealth_keepsSavedCookieValidWithoutExpiryCheck() {
         val now = 50L * 24L * 60L * 60L * 1000L
         val snapshot = BiliAuthBundle(
             cookies = mapOf("SESSDATA" to "cookie"),
-            savedAt = now - BILI_AUTH_STALE_AFTER_MS - 1L
+            savedAt = now - (90L * 24L * 60L * 60L * 1000L)
         )
 
         val health = evaluateBiliAuthHealth(snapshot, now = now)
 
-        assertEquals(SavedCookieAuthState.Stale, health.state)
-        assertTrue(health.shouldPromptRelogin)
+        assertEquals(SavedCookieAuthState.Valid, health.state)
+        assertFalse(health.shouldPromptRelogin)
     }
 
     @Test
