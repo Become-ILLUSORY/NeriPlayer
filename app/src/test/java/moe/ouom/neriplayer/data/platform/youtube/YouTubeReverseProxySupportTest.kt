@@ -30,6 +30,7 @@ class YouTubeReverseProxySupportTest {
     fun isYouTubeReverseProxyCandidateHost_matchesYouTubeAndGooglevideoOnly() {
         assertTrue(isYouTubeReverseProxyCandidateHost("music.youtube.com"))
         assertTrue(isYouTubeReverseProxyCandidateHost("rr1---sn.googlevideo.com"))
+        assertTrue(isYouTubeReverseProxyCandidateHost("i.ytimg.com"))
         assertFalse(isYouTubeReverseProxyCandidateHost("accounts.google.com"))
     }
 
@@ -44,6 +45,20 @@ class YouTubeReverseProxySupportTest {
         val resolved = requireNotNull(rewritten)
         assertEquals(
             "https://proxy.api.030101.xyz/https://music.youtube.com/youtubei/v1/search?prettyPrint=false",
+            resolved.toString()
+        )
+    }
+
+    @Test
+    fun rewriteYouTubeRequestUrl_rewritesYtimgHostsToProxyPath() {
+        val rewritten = rewriteYouTubeRequestUrl(
+            originalUrl = "https://i.ytimg.com/vi/song-video-id/hqdefault.jpg".toHttpUrl(),
+            proxyBaseUrl = "https://proxy.api.030101.xyz"
+        )
+
+        val resolved = requireNotNull(rewritten)
+        assertEquals(
+            "https://proxy.api.030101.xyz/https://i.ytimg.com/vi/song-video-id/hqdefault.jpg",
             resolved.toString()
         )
     }

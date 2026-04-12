@@ -50,7 +50,7 @@ fun normalizeYouTubeReverseProxyBaseUrl(candidate: String?): String? {
 }
 
 fun isYouTubeReverseProxyCandidateHost(host: String?): Boolean {
-    return isTrustedYouTubeHost(host)
+    return isTrustedYouTubeHost(host) || isYouTubeImageHost(host)
 }
 
 fun buildYouTubeReverseProxyUrl(

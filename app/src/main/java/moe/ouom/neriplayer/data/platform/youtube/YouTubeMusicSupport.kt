@@ -42,6 +42,7 @@ private const val YOUTUBE_MUSIC_SOCIALLY_CONSENTED_COOKIE: String = "SOCS=CAI"
 private const val YOUTUBE_ROOT_DOMAIN: String = "youtube.com"
 private const val YOUTUBE_SHORT_DOMAIN: String = "youtu.be"
 private const val YOUTUBE_GOOGLEVIDEO_ROOT_DOMAIN: String = "googlevideo.com"
+private const val YOUTUBE_IMAGE_ROOT_DOMAIN: String = "ytimg.com"
 private const val YOUTUBE_INNERTUBE_HOST: String = "youtubei.googleapis.com"
 private const val GOOGLE_ROOT_DOMAIN: String = "google.com"
 const val YOUTUBE_WEB_ORIGIN: String = "https://www.youtube.com"
@@ -87,6 +88,10 @@ fun isYouTubePageHost(host: String?): Boolean {
 
 fun isYouTubeGoogleVideoHost(host: String?): Boolean {
     return normalizeYouTubeHost(host).isExactOrSubdomainOf(YOUTUBE_GOOGLEVIDEO_ROOT_DOMAIN)
+}
+
+fun isYouTubeImageHost(host: String?): Boolean {
+    return normalizeYouTubeHost(host).isExactOrSubdomainOf(YOUTUBE_IMAGE_ROOT_DOMAIN)
 }
 
 fun isYouTubeInnertubeHost(host: String?): Boolean {
