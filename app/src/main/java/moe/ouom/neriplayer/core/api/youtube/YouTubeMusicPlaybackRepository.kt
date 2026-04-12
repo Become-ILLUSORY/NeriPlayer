@@ -82,6 +82,13 @@ import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
 
+private const val YOUTUBE_PLAYER_IOS_CLIENT_ID = "5"
+private const val YOUTUBE_PLAYER_IOS_CLIENT_NAME = "IOS"
+private const val YOUTUBE_PLAYER_IOS_CLIENT_VERSION = "21.03.2"
+private const val YOUTUBE_PLAYER_IOS_USER_AGENT =
+    "com.google.ios.youtube/21.03.2(iPhone16,2; U; CPU iOS 18_7_2 like Mac OS X; US)"
+private const val YOUTUBE_PLAYER_IOS_DEVICE_MODEL = "iPhone16,2"
+private const val YOUTUBE_PLAYER_IOS_OS_VERSION = "18.7.2.22H124"
 private const val YOUTUBE_PLAYER_WEB_REMIX_CLIENT_ID = "67"
 private const val YOUTUBE_PLAYER_WEB_REMIX_CLIENT_NAME = "WEB_REMIX"
 private const val YOUTUBE_PLAYER_WEB_REMIX_CLIENT_VERSION = "1.20260403.09.00"
